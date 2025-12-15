@@ -1,0 +1,6 @@
+*.db
+artifacts-temp/
+artifacts/
+!sites/*/index.html
+!sites/*/pages/*.html
+!index.html

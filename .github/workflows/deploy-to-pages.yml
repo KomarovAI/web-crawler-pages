@@ -36,17 +36,28 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
-      - name: 🗜️ Extract ZIP archives (recursive)
+      - name: 🗜️ Extract ALL ZIP archives recursively
         run: |
-          find artifacts -name "*.zip" -type f | while read zip; do
-            dir=$(dirname "$zip")
-            echo "Extracting: $zip to $dir"
-            unzip -q "$zip" -d "$dir"
-            rm "$zip"
+          echo "=== EXTRACTING ZIP FILES ==="
+          for i in {1..5}; do
+            echo "Pass $i:"
+            found=0
+            find artifacts -name "*.zip" -type f | while read zip; do
+              found=$((found+1))
+              dir=$(dirname "$zip")
+              echo "  Extracting: $zip"
+              unzip -q "$zip" -d "$dir"
+              rm "$zip"
+            done
+            if [ $found -eq 0 ]; then
+              echo "  No more ZIP files found"
+              break
+            fi
           done
-          echo "---"
-          echo "Final structure:"
-          find artifacts -type f
+          
+          echo ""
+          echo "=== FINAL STRUCTURE ==="
+          find artifacts -type f -exec file {} \;
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -60,6 +71,7 @@ jobs:
           from pathlib import Path
           import sys
           import os
+          import subprocess
           
           artifacts_dir = Path('artifacts')
           
@@ -68,12 +80,6 @@ jobs:
           # Check if artifacts directory exists
           if not artifacts_dir.exists():
             print(f"❌ Artifacts directory does not exist!")
-            print(f"📖 Current working directory: {os.getcwd()}")
-            print(f"📂 Contents of current dir: {os.listdir('.')}")
-            print("\n⚠️  Make sure:")
-            print("  1. Run ID is CORRECT (from web-crawler Actions tab)")
-            print("  2. That run has completed successfully")
-            print("  3. Artifacts were uploaded in that run")
             sys.exit(1)
           
           print(f"📂 Directory contents: {list(artifacts_dir.iterdir())}")
@@ -82,17 +88,6 @@ jobs:
           
           if not db_files:
             print("❌ No database files found!")
-            print("⚠️  Looking for pattern: db-*/*.db")
-            print("\n🔍 Searching recursively...")
-            db_files = list(artifacts_dir.glob('**//*.db'))
-            if db_files:
-              print(f"Found {len(db_files)} DB files recursively:")
-              for f in db_files:
-                print(f"  - {f}")
-            print("\n⚠️  Make sure:")
-            print("  1. Run ID is CORRECT (from web-crawler Actions tab)")
-            print("  2. That run has completed successfully")
-            print("  3. Artifacts were uploaded")
             sys.exit(1)
           
           print(f"\n✅ Found {len(db_files)} database(s)\n")
@@ -103,13 +98,32 @@ jobs:
             
             print(f"📦 {domain} ({size_mb:.2f} MB)")
             
-            # Check SQLite format
+            # Check file type with 'file' command
+            result = subprocess.run(['file', str(db_file)], capture_output=True, text=True)
+            file_type = result.stdout.strip()
+            print(f"  File type: {file_type}")
+            
+            # Check if it's actually a ZIP
             with open(db_file, 'rb') as f:
-              if f.read(16) != b'SQLite format 3':
-                print(f"  ❌ Invalid SQLite format!")
+              magic = f.read(4)
+              if magic == b'PK\x03\x04':  # ZIP file signature
+                print(f"  ⚠️  This is actually a ZIP file! Extracting...")
+                parent_dir = db_file.parent
+                subprocess.run(['unzip', '-q', str(db_file), '-d', str(parent_dir)])
+                db_file.unlink()
+                # Find the extracted DB
+                db_files_after = list(parent_dir.glob('*.db'))
+                if db_files_after:
+                  db_file = db_files_after[0]
+                  print(f"  ✅ Extracted to: {db_file}")
+                else:
+                  print(f"  ❌ No DB file found after extraction!")
+                  sys.exit(1)
+              elif magic != b'SQLite format 3':
+                print(f"  ❌ Invalid format! First 4 bytes: {magic.hex()}")
                 sys.exit(1)
             
-            # Connect and verify
+            # Now verify SQLite
             try:
               conn = sqlite3.connect(str(db_file))
               cursor = conn.cursor()
@@ -154,17 +168,20 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
-      - name: 🗜️ Extract ZIP archives (recursive)
+      - name: 🗜️ Extract ALL ZIP archives recursively
         run: |
-          find artifacts -name "*.zip" -type f | while read zip; do
-            dir=$(dirname "$zip")
-            echo "Extracting: $zip to $dir"
-            unzip -q "$zip" -d "$dir"
-            rm "$zip"
+          for i in {1..5}; do
+            found=0
+            find artifacts -name "*.zip" -type f | while read zip; do
+              found=$((found+1))
+              dir=$(dirname "$zip")
+              unzip -q "$zip" -d "$dir"
+              rm "$zip"
+            done
+            if [ $found -eq 0 ]; then
+              break
+            fi
           done
-          echo "---"
-          echo "Final structure:"
-          find artifacts -type f
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4

@@ -64,7 +64,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: ✅ Check database files
+      - name: ✅ Check database files & schema
         run: |
           python3 << 'EOF'
           import sqlite3
@@ -134,6 +134,17 @@ jobs:
               conn = sqlite3.connect(str(db_file))
               cursor = conn.cursor()
               
+              # Get all tables
+              cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+              tables = cursor.fetchall()
+              print(f"  📄 Tables: {[t[0] for t in tables]}")
+              
+              # Get schema for 'pages' table
+              cursor.execute("PRAGMA table_info(pages)")
+              columns = cursor.fetchall()
+              print(f"  📋 Columns in 'pages': {[c[1] for c in columns]}")
+              
+              # Count pages
               cursor.execute("SELECT COUNT(*) FROM pages")
               pages = cursor.fetchone()[0]
               print(f"  ✅ Pages: {pages}")
@@ -148,6 +159,8 @@ jobs:
               
             except Exception as e:
               print(f"  ❌ Error: {e}")
+              import traceback
+              traceback.print_exc()
               sys.exit(1)
           
           print("\n✅ All databases verified!\n")
@@ -230,7 +243,24 @@ jobs:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            cursor.execute("SELECT id, url, title, content, status_code FROM pages ORDER BY id")
+            # Dynamically detect columns
+            cursor.execute("PRAGMA table_info(pages)")
+            columns = {row[1]: row[1] for row in cursor.fetchall()}
+            
+            # Map common column names
+            url_col = next((c for c in columns if c.lower() in ['url', 'href', 'uri']), 'url')
+            title_col = next((c for c in columns if c.lower() in ['title', 'name', 'heading']), None)
+            content_col = next((c for c in columns if c.lower() in ['content', 'body', 'text']), None)
+            status_col = next((c for c in columns if c.lower() in ['status_code', 'status', 'code']), 'status_code')
+            
+            print(f"  Detected columns: url={url_col}, title={title_col}, content={content_col}, status={status_col}")
+            
+            # Build query
+            select_cols = [c for c in [url_col, title_col, content_col, status_col] if c]
+            query = f"SELECT {', '.join(select_cols)} FROM pages ORDER BY id"
+            print(f"  Query: {query}")
+            
+            cursor.execute(query)
             pages = cursor.fetchall()
             
             print(f"  📄 {len(pages)} pages")
@@ -282,9 +312,15 @@ jobs:
             
             for idx, page in enumerate(pages, 1):
               page_num = f"{idx:05d}"
-              title = (page['title'] or 'Untitled')[:40]
-              url = page['url'][:60]
-              status = page['status_code']
+              page_dict = dict(page)
+              
+              title = page_dict.get(title_col, 'Untitled')
+              if title is None:
+                title = 'Untitled'
+              title = str(title)[:40]
+              
+              url = page_dict.get(url_col, 'unknown')[:60]
+              status = page_dict.get(status_col, 'unknown')
               
               html_content += '<div class="card">\n'
               html_content += f'<h3>{title}</h3>\n'
@@ -305,13 +341,26 @@ jobs:
             for idx, page in enumerate(pages, 1):
               page_num = f"{idx:05d}"
               page_file = pages_dir / f"page-{page_num}.html"
+              page_dict = dict(page)
+              
+              title = page_dict.get(title_col, 'Untitled')
+              if title is None:
+                title = 'Untitled'
+              title = str(title)[:50]
+              
+              url = page_dict.get(url_col, 'unknown')
+              status = page_dict.get(status_col, 'unknown')
+              content = page_dict.get(content_col, '')
+              if content is None:
+                content = ''
+              content = str(content)[:5000]
               
               page_html = '<!DOCTYPE html>\n'
               page_html += '<html lang="en">\n'
               page_html += '<head>\n'
               page_html += '<meta charset="UTF-8">\n'
               page_html += '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-              page_html += f'<title>{(page["title"] or "Page")[:50]}</title>\n'
+              page_html += f'<title>{title}</title>\n'
               page_html += '<style>\n'
               page_html += '* { margin: 0; padding: 0; box-sizing: border-box; }\n'
               page_html += 'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; }\n'
@@ -329,12 +378,12 @@ jobs:
               page_html += '<a href="../index.html">← Back</a>\n'
               page_html += '</div>\n'
               page_html += '<div class="header">\n'
-              page_html += f'<h1>{(page["title"] or "Page")[:50]}</h1>\n'
-              page_html += f'<div class="meta"><b>URL:</b> {page["url"]}</div>\n'
-              page_html += f'<div class="meta"><b>Status:</b> {page["status_code"]}</div>\n'
+              page_html += f'<h1>{title}</h1>\n'
+              page_html += f'<div class="meta"><b>URL:</b> {url}</div>\n'
+              page_html += f'<div class="meta"><b>Status:</b> {status}</div>\n'
               page_html += '</div>\n'
               page_html += '<div style="margin-top: 30px; line-height: 1.8;">\n'
-              page_html += (page['content'] or '')[:5000]
+              page_html += content
               page_html += '\n</div>\n'
               page_html += '</div>\n'
               page_html += '</body>\n'

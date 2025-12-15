@@ -36,7 +36,7 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
-      - name: 🗜️ Extract ALL ZIP archives recursively
+      - name: 🗂️ Extract ALL ZIP archives recursively
         run: |
           echo "=== EXTRACTING ZIP FILES ==="
           for i in {1..5}; do
@@ -103,10 +103,10 @@ jobs:
             file_type = result.stdout.strip()
             print(f"  File type: {file_type}")
             
-            # Check if it's actually a ZIP
+            # Check if it's actually a ZIP (magic bytes: PK\x03\x04)
             with open(db_file, 'rb') as f:
-              magic = f.read(4)
-              if magic == b'PK\x03\x04':  # ZIP file signature
+              magic4 = f.read(4)
+              if magic4 == b'PK\x03\x04':  # ZIP file signature
                 print(f"  ⚠️  This is actually a ZIP file! Extracting...")
                 parent_dir = db_file.parent
                 subprocess.run(['unzip', '-q', str(db_file), '-d', str(parent_dir)])
@@ -119,8 +119,14 @@ jobs:
                 else:
                   print(f"  ❌ No DB file found after extraction!")
                   sys.exit(1)
-              elif magic != b'SQLite format 3':
-                print(f"  ❌ Invalid format! First 4 bytes: {magic.hex()}")
+            
+            # Verify SQLite format (read first 16 bytes for "SQLite format 3\x00")
+            with open(db_file, 'rb') as f:
+              sqlite_magic = f.read(16)
+              if sqlite_magic != b'SQLite format 3\x00':
+                print(f"  ❌ Invalid SQLite format!")
+                print(f"     First 16 bytes (hex): {sqlite_magic.hex()}")
+                print(f"     Expected: 53514c69746520666f726d617420330a")
                 sys.exit(1)
             
             # Now verify SQLite
@@ -168,7 +174,7 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
-      - name: 🗜️ Extract ALL ZIP archives recursively
+      - name: 🗂️ Extract ALL ZIP archives recursively
         run: |
           for i in {1..5}; do
             found=0

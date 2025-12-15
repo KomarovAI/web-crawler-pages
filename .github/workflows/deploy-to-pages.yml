@@ -1,48 +1,32 @@
-name: 🌐 Deploy Crawled Sites
+name: 🌐 Deploy to Pages
 
 on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Source repository (owner/repo)'
+        description: 'Source repository (KomarovAI/web-crawler)'
         required: true
         default: 'KomarovAI/web-crawler'
       run_id:
-        description: 'Workflow run ID to download artifacts from'
+        description: 'Workflow run ID from web-crawler'
         required: true
       site_domain:
-        description: 'Domain name for folder (e.g., callmedley-com)'
+        description: 'Domain folder name (e.g., callmedley-com)'
         required: true
         default: 'callmedley-com'
-      skip_verify:
-        description: 'Skip verification (NOT RECOMMENDED)'
-        required: false
-        type: boolean
-        default: false
-      rollback_mode:
-        description: 'Rollback to previous deployment instead of deploy'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
-  # ============================================================
-  # STEP 1: VERIFY - Full database validation
-  # ============================================================
-  verify:
-    name: '🔍 Verify Artifacts'
+  deploy:
+    name: '🚀 Deploy'
     runs-on: ubuntu-24.04
-    if: inputs.rollback_mode == false && inputs.skip_verify == false
     permissions:
-      contents: read
-      actions: read
-    outputs:
-      status: ${{ steps.final.outputs.status }}
-      page_count: ${{ steps.verify.outputs.page_count }}
-      artifact_hash: ${{ steps.verify.outputs.artifact_hash }}
+      contents: write
+      pages: write
+      id-token: write
     
     steps:
-      - name: 📥 Download Artifacts
+      # ========== STEP 1: Download Artifacts ==========
+      - name: 📥 Download artifacts from web-crawler
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -50,147 +34,88 @@ jobs:
           repository: ${{ inputs.source_repo }}
           run-id: ${{ inputs.run_id }}
 
-      - name: 🐍 Setup Python
+      # ========== STEP 2: Setup Environment ==========
+      - name: 🔧 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: 🔍 Verify Database
-        id: verify
-        run: python3 << 'VERIFY_SCRIPT'
+      # ========== STEP 3: Verify Database ==========
+      - name: ✅ Verify database integrity
+        run: python3 << 'VERIFY'
 import sqlite3
-import hashlib
 from pathlib import Path
-
-print("\n" + "="*60)
-print("🔍 DATABASE VERIFICATION")
-print("="*60 + "\n")
+import sys
 
 artifacts_dir = Path('artifacts')
 db_files = list(artifacts_dir.glob('db-*/*.db'))
 
 if not db_files:
   print("❌ No database files found!")
-  exit(1)
+  sys.exit(1)
 
-print(f"📦 Found {len(db_files)} database(s)\n")
-
-total_pages = 0
-errors = []
+print(f"✅ Found {len(db_files)} database(s)")
 
 for db_file in sorted(db_files):
   domain = db_file.parent.name.replace('db-', '')
   size_mb = db_file.stat().st_size / 1024 / 1024
   
-  print(f"Domain: {domain} ({size_mb:.2f} MB)")
+  print(f"\n📦 Checking: {domain} ({size_mb:.2f} MB)")
   
+  # Check SQLite format
+  with open(db_file, 'rb') as f:
+    if f.read(16) != b'SQLite format 3':
+      print(f"  ❌ Invalid SQLite format!")
+      sys.exit(1)
+  
+  # Connect and verify
   try:
-    with open(db_file, 'rb') as f:
-      if f.read(16) != b'SQLite format 3':
-        print(f"  ❌ Invalid SQLite format")
-        exit(1)
-    
     conn = sqlite3.connect(str(db_file))
     cursor = conn.cursor()
     
-    # Check pages table
+    # Check tables
     cursor.execute("SELECT COUNT(*) FROM pages")
     pages = cursor.fetchone()[0]
-    total_pages += pages
     print(f"  ✅ Pages: {pages}")
     
     # Check integrity
     cursor.execute("PRAGMA integrity_check")
     if cursor.fetchone()[0] != 'ok':
-      print(f"  ❌ Corrupted")
-      exit(1)
-    print(f"  ✅ Integrity: OK")
+      print(f"  ❌ Database corrupted!")
+      sys.exit(1)
     
+    print(f"  ✅ Integrity: OK")
     conn.close()
-  
+    
   except Exception as e:
     print(f"  ❌ Error: {e}")
-    errors.append(str(e))
+    sys.exit(1)
 
-if errors:
-  print(f"\n❌ {len(errors)} error(s) found")
-  exit(1)
+print("\n✅ All databases verified!")
+VERIFY
 
-# Calculate hash
-sha256 = hashlib.sha256()
-for db_file in sorted(db_files):
-  with open(db_file, 'rb') as f:
-    for chunk in iter(lambda: f.read(4096), b''):
-      sha256.update(chunk)
-artifact_hash = sha256.hexdigest()
-
-print(f"\n{'='*60}")
-print(f"✅ Pages verified: {total_pages}")
-print(f"✅ Hash: {artifact_hash[:16]}...")
-print(f"{'='*60}\n")
-
-with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-  f.write(f"page_count={total_pages}\n")
-  f.write(f"artifact_hash={artifact_hash}\n")
-VERIFY_SCRIPT
-        env:
-          GITHUB_OUTPUT: ${{ github.output }}
-
-      - name: ✅ Verification Complete
-        id: final
-        run: echo "status=verified" >> $GITHUB_OUTPUT
-
-  # ============================================================
-  # STEP 2: BUILD - Convert database to HTML
-  # ============================================================
-  build:
-    name: '🏗️ Build Static Site'
-    needs: [verify]
-    if: |
-      (inputs.rollback_mode == false) &&
-      (inputs.skip_verify == false && needs.verify.result == 'success' ||
-       inputs.skip_verify == true)
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      build_status: success
-    
-    steps:
-      - name: 📥 Checkout
+      # ========== STEP 4: Checkout repo ==========
+      - name: 📂 Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: 📥 Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: false
-          repository: ${{ inputs.source_repo }}
-          run-id: ${{ inputs.run_id }}
-
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: 🏗️ Build HTML
-        run: python3 << 'BUILD_SCRIPT'
+      # ========== STEP 5: Build HTML pages ==========
+      - name: 🏗️ Build HTML pages
+        run: python3 << 'BUILD'
 import sqlite3
 import json
 import shutil
 from pathlib import Path
 from datetime import datetime
 
-print("\n" + "="*60)
-print("🏗️ BUILDING STATIC SITE")
-print("="*60 + "\n")
-
 artifacts_dir = Path('artifacts')
 output_dir = Path('sites')
 output_dir.mkdir(exist_ok=True)
+
+print("\n" + "="*60)
+print("🏗️  BUILDING STATIC SITE")
+print("="*60 + "\n")
 
 for db_dir in sorted(artifacts_dir.glob('db-*')):
   domain_folder = db_dir.name.replace('db-', '')
@@ -206,8 +131,10 @@ for db_dir in sorted(artifacts_dir.glob('db-*')):
   pages_dir = site_dir / 'pages'
   pages_dir.mkdir(exist_ok=True)
   
+  # Copy database
   shutil.copy(db_file, site_dir / f"{domain_folder}.db")
   
+  # Read pages from database
   conn = sqlite3.connect(str(db_file))
   conn.row_factory = sqlite3.Row
   cursor = conn.cursor()
@@ -215,107 +142,128 @@ for db_dir in sorted(artifacts_dir.glob('db-*')):
   cursor.execute("SELECT id, url, title, content, status_code FROM pages ORDER BY id")
   pages = cursor.fetchall()
   
-  print(f"  📄 Processing {len(pages)} pages...")
+  print(f"  📄 {len(pages)} pages found")
   
+  # Create index page
+  index_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{domain_folder}</title>
+  <style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 40px 20px;
+    }}
+    .container {{ max-width: 1200px; margin: 0 auto; }}
+    h1 {{ color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }}
+    .card {{
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+      transition: transform 0.2s;
+    }}
+    .card:hover {{ transform: translateY(-5px); }}
+    .card h3 {{ color: #333; margin-bottom: 10px; font-size: 1.1em; }}
+    .card p {{ color: #666; font-size: 0.9em; margin-bottom: 5px; word-break: break-all; }}
+    .card small {{ color: #999; }}
+    .card a {{
+      display: inline-block;
+      margin-top: 15px;
+      padding: 8px 12px;
+      background: #667eea;
+      color: white;
+      text-decoration: none;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }}
+    .card a:hover {{ background: #764ba2; }}
+    .stats {{ text-align: center; color: white; margin-top: 40px; font-size: 0.9em; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📦 {domain_folder}</h1>
+    <div class="grid">
+"""
+  
+  # Add page cards
+  for idx, page in enumerate(pages, 1):
+    page_num = f"{idx:05d}"
+    title = (page['title'] or 'Untitled')[:40]
+    url = page['url'][:60]
+    status = page['status_code']
+    
+    index_html += f"""      <div class="card">
+        <h3>{title}</h3>
+        <p>{url}</p>
+        <small>Status: {status}</small>
+        <br>
+        <a href="pages/page-{page_num}.html">View →</a>
+      </div>
+"""
+  
+  index_html += f"""    </div>
+    <div class="stats">
+      ✨ {len(pages)} pages | Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC
+    </div>
+  </div>
+</body>
+</html>"""
+  
+  with open(site_dir / 'index.html', 'w', encoding='utf-8') as f:
+    f.write(index_html)
+  
+  # Create individual page files
   for idx, page in enumerate(pages, 1):
     page_num = f"{idx:05d}"
     page_file = pages_dir / f"page-{page_num}.html"
     
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>{page['title'] or page['url']}</title>
-      <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }}
-        .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 30px; }}
-        .header {{ border-bottom: 2px solid #667eea; margin-bottom: 30px; padding-bottom: 20px; }}
-        .header h1 {{ color: #667eea; margin-bottom: 10px; }}
-        .meta {{ color: #666; font-size: 0.9em; margin: 5px 0; }}
-        .content {{ margin: 30px 0; line-height: 1.8; }}
-        .nav {{ margin-bottom: 20px; }}
-        .nav a {{ display: inline-block; margin-right: 10px; padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
-        .nav a:hover {{ background: #764ba2; }}
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="nav">
-          <a href="../index.html">← Back</a>
-        </div>
-        <div class="header">
-          <h1>{page['title'] or 'Page'}</h1>
-          <div class="meta"><strong>URL:</strong> {page['url']}</div>
-          <div class="meta"><strong>Status:</strong> {page['status_code']}</div>
-          <div class="meta"><strong>Page:</strong> {idx}/{len(pages)}</div>
-        </div>
-        <div class="content">
-          {(page['content'] or '')[:5000]}
-        </div>
-      </div>
-    </body>
-    </html>
-    """
+    page_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{(page['title'] or page['url'])[:60]}</title>
+  <style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }}
+    .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 30px; }}
+    .header {{ border-bottom: 2px solid #667eea; margin-bottom: 30px; padding-bottom: 20px; }}
+    .header h1 {{ color: #667eea; margin-bottom: 10px; }}
+    .meta {{ color: #666; font-size: 0.9em; margin: 5px 0; }}
+    .content {{ margin: 30px 0; line-height: 1.8; white-space: pre-wrap; word-wrap: break-word; }}
+    .nav {{ margin-bottom: 20px; }}
+    .nav a {{ display: inline-block; margin-right: 10px; padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
+    .nav a:hover {{ background: #764ba2; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="nav">
+      <a href="../index.html">← Back to index</a>
+    </div>
+    <div class="header">
+      <h1>{(page['title'] or 'Page')[:60]}</h1>
+      <div class="meta"><strong>URL:</strong> {page['url']}</div>
+      <div class="meta"><strong>Status:</strong> {page['status_code']}</div>
+      <div class="meta"><strong>Page {idx}/{len(pages)}</strong></div>
+    </div>
+    <div class="content">
+{(page['content'] or '')[:8000]}
+    </div>
+  </div>
+</body>
+</html>"""
     
     with open(page_file, 'w', encoding='utf-8') as f:
-      f.write(html)
-  
-  # Create site index
-  index_html = f"""
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{domain_folder}</title>
-    <style>
-      * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-      body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }}
-      .container {{ max-width: 1200px; margin: 0 auto; }}
-      h1 {{ color: white; text-align: center; margin-bottom: 40px; }}
-      .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }}
-      .card {{ background: white; border-radius: 8px; padding: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }}
-      .card h3 {{ color: #333; margin-bottom: 8px; }}
-      .card p {{ color: #666; font-size: 0.9em; margin-bottom: 10px; word-break: break-all; }}
-      .card a {{ display: inline-block; padding: 8px 12px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; margin-top: 10px; }}
-      .card a:hover {{ background: #764ba2; }}
-      .back {{ text-align: center; margin: 30px 0; }}
-      .back a {{ color: white; text-decoration: none; padding: 10px 20px; border: 2px solid white; border-radius: 4px; }}
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <h1>📦 {domain_folder}</h1>
-      <div class="grid">
-  """
-  
-  for idx, page in enumerate(pages, 1):
-    page_num = f"{idx:05d}"
-    index_html += f"""
-      <div class="card">
-        <h3>{(page['title'] or 'Untitled')[:30]}</h3>
-        <p>{page['url'][:50]}</p>
-        <small>Status: {page['status_code']}</small>
-        <br>
-        <a href="pages/page-{page_num}.html">View →</a>
-      </div>
-    """
-  
-  index_html += """
-      </div>
-      <div class="back">
-        <a href="../index.html">← All Sites</a>
-      </div>
-    </div>
-  </body>
-  </html>
-  """
-  
-  with open(site_dir / 'index.html', 'w', encoding='utf-8') as f:
-    f.write(index_html)
+      f.write(page_html)
   
   conn.close()
   print(f"  ✅ Done ({len(pages)} pages)\n")
@@ -323,150 +271,46 @@ for db_dir in sorted(artifacts_dir.glob('db-*')):
 print("="*60)
 print("✅ Build complete!")
 print("="*60 + "\n")
-BUILD_SCRIPT
+BUILD
 
-      - name: 📤 Upload Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: static-site
-          path: sites/
-          retention-days: 7
-
-  # ============================================================
-  # STEP 3: DEPLOY - Upload to GitHub Pages
-  # ============================================================
-  deploy:
-    name: '🚀 Deploy to GitHub Pages'
-    needs: [build]
-    if: needs.build.result == 'success'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
-    
-    steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: 📥 Download Built Site
-        uses: actions/download-artifact@v4
-        with:
-          name: static-site
-          path: sites/
-
-      - name: 📝 Create Metadata
-        run: |
-          mkdir -p .deployment
-          cat > .deployment/info.json << 'EOF'
-          {
-            "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "deployment_id": "${{ github.run_id }}",
-            "source_repo": "${{ inputs.source_repo }}",
-            "source_run_id": "${{ inputs.run_id }}",
-            "domain": "${{ inputs.site_domain }}"
-          }
-          EOF
-
-      - name: 🔧 Setup Pages
+      # ========== STEP 6: Setup GitHub Pages ==========
+      - name: 🔧 Configure Pages
         uses: actions/configure-pages@v4
 
-      - name: 🏗️ Build Jekyll
+      # ========== STEP 7: Build with Jekyll ==========
+      - name: 🏗️ Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
           source: ./
           destination: ./_site
 
-      - name: 📤 Upload Pages Artifact
+      # ========== STEP 8: Upload Pages artifact ==========
+      - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: './_site'
 
-      - name: 🚀 Deploy
+      # ========== STEP 9: Deploy to GitHub Pages ==========
+      - name: 🚀 Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
 
-  # ============================================================
-  # STEP 4: ROLLBACK - Revert to previous deployment
-  # ============================================================
-  rollback:
-    name: '🔄 Rollback'
-    if: inputs.rollback_mode == true
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-    
-    steps:
-      - name: 📥 Checkout Previous
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 5
-
-      - name: 🔄 Get Previous Commit
+      # ========== STEP 10: Summary ==========
+      - name: 📊 Deployment Summary
         run: |
-          echo "🔄 Rolling back to previous deployment..."
-          git log --oneline | head -5
-          PREV=$(git log --oneline | head -2 | tail -1 | awk '{print $1}')
-          git checkout $PREV -- sites/ 2>/dev/null || true
-
-      - name: 🔧 Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: 🏗️ Build Jekyll
-        uses: actions/jekyll-build-pages@v1
-        with:
-          source: ./
-          destination: ./_site
-
-      - name: 📤 Upload Pages Artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: './_site'
-
-      - name: 🚀 Deploy Rollback
-        uses: actions/deploy-pages@v4
-
-  # ============================================================
-  # STEP 5: SUMMARY - Print results
-  # ============================================================
-  summary:
-    name: '📊 Summary'
-    runs-on: ubuntu-24.04
-    if: always()
-    
-    steps:
-      - name: 📊 Print Summary
-        run: |
-          if [ "${{ inputs.rollback_mode }}" = "true" ]; then
-            echo "
-          ╔════════════════════════════════════════════════════════════════╗
-          ║              🔄 ROLLBACK EXECUTED                              ║
-          ╚════════════════════════════════════════════════════════════════╝
-            "
-          else
-            echo "
-          ╔════════════════════════════════════════════════════════════════╗
-          ║              ✅ DEPLOYMENT COMPLETE                            ║
-          ╚════════════════════════════════════════════════════════════════╝
-          
-          📊 Details:
-            • Domain: ${{ inputs.site_domain }}
-            • Source: ${{ inputs.source_repo }}
-            • Run ID: ${{ inputs.run_id }}
-            • Workflow: ${{ github.run_id }}
-            • Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-          
-          🌐 Pages URL:
-            https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
-          
-          ✨ Your sites are LIVE!
-            "
-          fi
+          echo ""
+          echo "╔════════════════════════════════════════════════════════╗"
+          echo "║          ✅ DEPLOYMENT SUCCESSFUL                      ║"
+          echo "╚════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "📖 Details:"
+          echo "  • Domain: ${{ inputs.site_domain }}"
+          echo "  • Source: ${{ inputs.source_repo }}"
+          echo "  • Run ID: ${{ inputs.run_id }}"
+          echo "  • Workflow: ${{ github.run_id }}"
+          echo "  • Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo ""
+          echo "🌐 Pages URL:"
+          echo "  https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          echo ""
+          echo "✨ Your sites are LIVE!"
+          echo ""

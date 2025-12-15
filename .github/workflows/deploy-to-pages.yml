@@ -8,7 +8,7 @@ on:
         required: true
         default: 'KomarovAI/web-crawler'
       run_id:
-        description: 'Workflow run ID from web-crawler'
+        description: 'Workflow run ID from web-crawler (look at Actions tab)'
         required: true
       site_domain:
         description: 'Domain folder name (e.g., callmedley-com)'
@@ -16,17 +16,18 @@ on:
         default: 'callmedley-com'
 
 jobs:
-  deploy:
-    name: '🚀 Deploy'
+  # ============================================================
+  # JOB 1: VERIFY - Check database integrity
+  # ============================================================
+  verify:
+    name: '🔍 Verify Database'
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
-      pages: write
-      id-token: write
+      contents: read
+      actions: read
     
     steps:
-      # ========== STEP 1: Download Artifacts ==========
-      - name: 📥 Download artifacts from web-crawler
+      - name: 📥 Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -34,14 +35,12 @@ jobs:
           repository: ${{ inputs.source_repo }}
           run-id: ${{ inputs.run_id }}
 
-      # ========== STEP 2: Setup Environment ==========
-      - name: 🔧 Setup Python
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      # ========== STEP 3: Verify Database ==========
-      - name: ✅ Verify database integrity
+      - name: ✅ Check database files
         run: |
           python3 << 'EOF'
           import sqlite3
@@ -51,17 +50,24 @@ jobs:
           artifacts_dir = Path('artifacts')
           db_files = list(artifacts_dir.glob('db-*/*.db'))
           
+          print(f"\n🔍 Searching in: {artifacts_dir}")
+          print(f📂 Directory contents: {list(artifacts_dir.iterdir())}")
+          
           if not db_files:
             print("❌ No database files found!")
+            print("⚠️  Make sure:")
+            print("  1. Run ID is CORRECT (from web-crawler Actions tab)")
+            print("  2. That run has completed successfully")
+            print("  3. Artifacts were uploaded")
             sys.exit(1)
           
-          print(f"✅ Found {len(db_files)} database(s)")
+          print(f"\n✅ Found {len(db_files)} database(s)\n")
           
           for db_file in sorted(db_files):
             domain = db_file.parent.name.replace('db-', '')
             size_mb = db_file.stat().st_size / 1024 / 1024
             
-            print(f"\n📦 Checking: {domain} ({size_mb:.2f} MB)")
+            print(f"📦 {domain} ({size_mb:.2f} MB)")
             
             # Check SQLite format
             with open(db_file, 'rb') as f:
@@ -74,12 +80,10 @@ jobs:
               conn = sqlite3.connect(str(db_file))
               cursor = conn.cursor()
               
-              # Check tables
               cursor.execute("SELECT COUNT(*) FROM pages")
               pages = cursor.fetchone()[0]
               print(f"  ✅ Pages: {pages}")
               
-              # Check integrity
               cursor.execute("PRAGMA integrity_check")
               if cursor.fetchone()[0] != 'ok':
                 print(f"  ❌ Database corrupted!")
@@ -92,16 +96,34 @@ jobs:
               print(f"  ❌ Error: {e}")
               sys.exit(1)
           
-          print("\n✅ All databases verified!")
+          print("\n✅ All databases verified!\n")
           EOF
 
-      # ========== STEP 4: Checkout repo ==========
-      - name: 📂 Checkout repository
-        uses: actions/checkout@v4
+  # ============================================================
+  # JOB 2: BUILD - Convert database to HTML
+  # ============================================================
+  build:
+    name: '🏗️ Build HTML'
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    
+    steps:
+      - name: 📥 Download artifacts
+        uses: actions/download-artifact@v4
         with:
-          fetch-depth: 1
+          path: artifacts
+          merge-multiple: false
+          repository: ${{ inputs.source_repo }}
+          run-id: ${{ inputs.run_id }}
 
-      # ========== STEP 5: Build HTML pages ==========
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
       - name: 🏗️ Build HTML pages
         run: |
           python3 << 'EOF'
@@ -132,10 +154,8 @@ jobs:
             pages_dir = site_dir / 'pages'
             pages_dir.mkdir(exist_ok=True)
             
-            # Copy database
             shutil.copy(db_file, site_dir / f"{domain_folder}.db")
             
-            # Read pages from database
             conn = sqlite3.connect(str(db_file))
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -143,7 +163,7 @@ jobs:
             cursor.execute("SELECT id, url, title, content, status_code FROM pages ORDER BY id")
             pages = cursor.fetchall()
             
-            print(f"  📄 {len(pages)} pages found")
+            print(f"  📄 {len(pages)} pages")
             
             # Create index page
             index_html = f"""<!DOCTYPE html>
@@ -171,9 +191,8 @@ jobs:
                 transition: transform 0.2s;
               }}
               .card:hover {{ transform: translateY(-5px); }}
-              .card h3 {{ color: #333; margin-bottom: 10px; font-size: 1.1em; }}
-              .card p {{ color: #666; font-size: 0.9em; margin-bottom: 5px; word-break: break-all; }}
-              .card small {{ color: #999; }}
+              .card h3 {{ color: #333; margin-bottom: 10px; }}
+              .card p {{ color: #666; font-size: 0.9em; word-break: break-all; }}
               .card a {{
                 display: inline-block;
                 margin-top: 15px;
@@ -182,10 +201,8 @@ jobs:
                 color: white;
                 text-decoration: none;
                 border-radius: 4px;
-                font-size: 0.9em;
               }}
               .card a:hover {{ background: #764ba2; }}
-              .stats {{ text-align: center; color: white; margin-top: 40px; font-size: 0.9em; }}
             </style>
           </head>
           <body>
@@ -194,7 +211,6 @@ jobs:
               <div class="grid">
           """
             
-            # Add page cards
             for idx, page in enumerate(pages, 1):
               page_num = f"{idx:05d}"
               title = (page['title'] or 'Untitled')[:40]
@@ -205,15 +221,11 @@ jobs:
                 <h3>{title}</h3>
                 <p>{url}</p>
                 <small>Status: {status}</small>
-                <br>
                 <a href="pages/page-{page_num}.html">View →</a>
               </div>
           """
             
             index_html += f"""              </div>
-              <div class="stats">
-                ✨ {len(pages)} pages | Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC
-              </div>
             </div>
           </body>
           </html>"""
@@ -231,33 +243,30 @@ jobs:
           <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>{(page['title'] or page['url'])[:60]}</title>
+            <title>{(page['title'] or 'Page')[:50]}</title>
             <style>
               * {{ margin: 0; padding: 0; box-sizing: border-box; }}
               body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }}
               .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 30px; }}
-              .header {{ border-bottom: 2px solid #667eea; margin-bottom: 30px; padding-bottom: 20px; }}
-              .header h1 {{ color: #667eea; margin-bottom: 10px; }}
+              .header {{ border-bottom: 2px solid #667eea; margin-bottom: 30px; }}
+              .header h1 {{ color: #667eea; }}
               .meta {{ color: #666; font-size: 0.9em; margin: 5px 0; }}
-              .content {{ margin: 30px 0; line-height: 1.8; white-space: pre-wrap; word-wrap: break-word; }}
-              .nav {{ margin-bottom: 20px; }}
-              .nav a {{ display: inline-block; margin-right: 10px; padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
+              .nav a {{ display: inline-block; padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
               .nav a:hover {{ background: #764ba2; }}
             </style>
           </head>
           <body>
             <div class="container">
-              <div class="nav">
-                <a href="../index.html">← Back to index</a>
+              <div class="nav" style="margin-bottom: 20px;">
+                <a href="../index.html">← Back</a>
               </div>
               <div class="header">
-                <h1>{(page['title'] or 'Page')[:60]}</h1>
-                <div class="meta"><strong>URL:</strong> {page['url']}</div>
-                <div class="meta"><strong>Status:</strong> {page['status_code']}</div>
-                <div class="meta"><strong>Page {idx}/{len(pages)}</strong></div>
+                <h1>{(page['title'] or 'Page')[:50]}</h1>
+                <div class="meta"><b>URL:</b> {page['url']}</div>
+                <div class="meta"><b>Status:</b> {page['status_code']}</div>
               </div>
-              <div class="content">
-          {(page['content'] or '')[:8000]}
+              <div style="margin-top: 30px; line-height: 1.8;">
+          {(page['content'] or '')[:5000]}
               </div>
             </div>
           </body>
@@ -267,36 +276,65 @@ jobs:
                 f.write(page_html)
             
             conn.close()
-            print(f"  ✅ Done ({len(pages)} pages)\n")
+            print(f"  ✅ Done\n")
           
           print("="*60)
           print("✅ Build complete!")
-          print("="*60 + "\n")
+          print("="*60)
           EOF
 
-      # ========== STEP 6: Setup GitHub Pages ==========
+      - name: 📤 Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sites-build
+          path: sites/
+          retention-days: 1
+
+  # ============================================================
+  # JOB 3: DEPLOY - Upload to GitHub Pages
+  # ============================================================
+  deploy:
+    name: '🚀 Deploy to Pages'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+    
+    steps:
+      - name: 📂 Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 📥 Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: sites-build
+          path: sites/
+
       - name: 🔧 Configure Pages
         uses: actions/configure-pages@v4
 
-      # ========== STEP 7: Build with Jekyll ==========
       - name: 🏗️ Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
           source: ./
           destination: ./_site
 
-      # ========== STEP 8: Upload Pages artifact ==========
       - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: './_site'
 
-      # ========== STEP 9: Deploy to GitHub Pages ==========
       - name: 🚀 Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
 
-      # ========== STEP 10: Summary ==========
-      - name: 📊 Deployment Summary
+      - name: 📊 Summary
         run: |
           echo ""
           echo "╔════════════════════════════════════════════════════════╗"
@@ -308,7 +346,6 @@ jobs:
           echo "  • Source: ${{ inputs.source_repo }}"
           echo "  • Run ID: ${{ inputs.run_id }}"
           echo "  • Workflow: ${{ github.run_id }}"
-          echo "  • Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo ""
           echo "🌐 Pages URL:"
           echo "  https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"

@@ -36,15 +36,17 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
-      - name: 📦 Extract ZIP archives
+      - name: 🗜️ Extract ZIP archives (recursive)
         run: |
-          cd artifacts
-          for zip in $(find . -name "*.zip" -type f); do
+          find artifacts -name "*.zip" -type f | while read zip; do
             dir=$(dirname "$zip")
+            echo "Extracting: $zip to $dir"
             unzip -q "$zip" -d "$dir"
             rm "$zip"
           done
-          cd ..
+          echo "---"
+          echo "Final structure:"
+          find artifacts -type f
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -81,6 +83,12 @@ jobs:
           if not db_files:
             print("❌ No database files found!")
             print("⚠️  Looking for pattern: db-*/*.db")
+            print("\n🔍 Searching recursively...")
+            db_files = list(artifacts_dir.glob('**//*.db'))
+            if db_files:
+              print(f"Found {len(db_files)} DB files recursively:")
+              for f in db_files:
+                print(f"  - {f}")
             print("\n⚠️  Make sure:")
             print("  1. Run ID is CORRECT (from web-crawler Actions tab)")
             print("  2. That run has completed successfully")
@@ -146,15 +154,17 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
-      - name: 📦 Extract ZIP archives
+      - name: 🗜️ Extract ZIP archives (recursive)
         run: |
-          cd artifacts
-          for zip in $(find . -name "*.zip" -type f); do
+          find artifacts -name "*.zip" -type f | while read zip; do
             dir=$(dirname "$zip")
+            echo "Extracting: $zip to $dir"
             unzip -q "$zip" -d "$dir"
             rm "$zip"
           done
-          cd ..
+          echo "---"
+          echo "Final structure:"
+          find artifacts -type f
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -244,7 +254,7 @@ jobs:
             html_content += '</head>\n'
             html_content += '<body>\n'
             html_content += '<div class="container">\n'
-            html_content += f'<h1>\U0001f4c6 {domain_folder}</h1>\n'
+            html_content += f'<h1>📖 {domain_folder}</h1>\n'
             html_content += '<div class="grid">\n'
             
             for idx, page in enumerate(pages, 1):

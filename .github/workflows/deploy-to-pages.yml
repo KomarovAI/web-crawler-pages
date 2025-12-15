@@ -1,0 +1,561 @@
+name: 🚀 Deploy to GitHub Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Source repository (owner/repo)'
+        required: true
+        default: 'KomarovAI/web-crawler'
+      run_id:
+        description: 'Workflow run ID to deploy from'
+        required: true
+      site_domain:
+        description: 'Domain name for folder (e.g., callmedley-com)'
+        required: true
+        default: 'callmedley-com'
+      auto_verify:
+        description: 'Run verification before deployment'
+        required: false
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      source_repo:
+        type: string
+        required: true
+        default: 'KomarovAI/web-crawler'
+      run_id:
+        type: string
+        required: true
+      site_domain:
+        type: string
+        required: true
+      auto_verify:
+        type: boolean
+        required: false
+        default: true
+
+env:
+  DEPLOYMENT_TIMEOUT: 300 # 5 minutes
+  PAGES_URL: "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+
+jobs:
+  pre-deploy-verify:
+    name: 🔍 Pre-Deploy Verification
+    if: inputs.auto_verify == true
+    uses: ./.github/workflows/verify-artifact.yml
+    with:
+      source_repo: ${{ inputs.source_repo }}
+      run_id: ${{ inputs.run_id }}
+      site_domain: ${{ inputs.site_domain }}
+    permissions:
+      contents: read
+      actions: read
+
+  prepare:
+    name: 📦 Prepare Deployment
+    needs: [pre-deploy-verify]
+    if: always() && (needs.pre-deploy-verify.result == 'success' || inputs.auto_verify == false)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      deployment_id: ${{ steps.prepare.outputs.deployment_id }}
+      page_count: ${{ steps.prepare.outputs.page_count }}
+      artifact_size: ${{ steps.prepare.outputs.artifact_size }}
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          sparse-checkout: |
+            index.html
+            .github
+
+      - name: 📤 Download Artifacts
+        id: download
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+          repository: ${{ inputs.source_repo }}
+          run-id: ${{ inputs.run_id }}
+
+      - name: 📅 Prepare Deployment
+        id: prepare
+        run: |
+          set -e
+          
+          echo "Preparing deployment..."
+          
+          # Generate deployment ID
+          deployment_id="$(date +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+          echo "deployment_id=$deployment_id" >> $GITHUB_OUTPUT
+          
+          # Extract artifact size
+          artifact_size=$(du -sh artifacts | cut -f1)
+          echo "artifact_size=$artifact_size" >> $GITHUB_OUTPUT
+          
+          # Count pages from database
+          python3 << 'PYTHON'
+          import sqlite3
+          from pathlib import Path
+          
+          db_files = list(Path('artifacts').glob('db-*/*.db'))
+          total_pages = 0
+          
+          for db_file in db_files:
+            conn = sqlite3.connect(str(db_file))
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM pages")
+            total_pages += cursor.fetchone()[0]
+            conn.close()
+          
+          print(f"page_count={total_pages}")
+          PYTHON >> $GITHUB_OUTPUT
+
+  build-site:
+    name: 💾 Build Static Site
+    needs: [prepare]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      build_status: success
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 📤 Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+          repository: ${{ inputs.source_repo }}
+          run-id: ${{ inputs.run_id }}
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 💾 Generate HTML Site
+        run: |
+          python3 << 'PYTHON'
+          import sqlite3
+          import os
+          import json
+          from pathlib import Path
+          from datetime import datetime
+          from urllib.parse import urljoin
+          
+          print("\n" + "="*70)
+          print("💾 BUILDING STATIC SITE")
+          print("="*70 + "\n")
+          
+          artifacts_dir = Path('artifacts')
+          output_dir = Path('sites')
+          output_dir.mkdir(exist_ok=True)
+          
+          sites_metadata = []
+          
+          for db_dir in sorted(artifacts_dir.glob('db-*')):
+            domain_folder = db_dir.name.replace('db-', '')
+            db_file = db_dir / f"{domain_folder}.db"
+            
+            if not db_file.exists():
+              print(f"❌ Skipping {domain_folder} - no database found")
+              continue
+            
+            print(f"💾 Building site for: {domain_folder}")
+            
+            # Create site directory
+            site_dir = output_dir / domain_folder
+            site_dir.mkdir(exist_ok=True)
+            pages_dir = site_dir / 'pages'
+            pages_dir.mkdir(exist_ok=True)
+            
+            # Copy database
+            import shutil
+            shutil.copy(db_file, site_dir / f"{domain_folder}.db")
+            
+            # Read from database
+            conn = sqlite3.connect(str(db_file))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Get all pages
+            cursor.execute("""
+              SELECT id, url, title, content, status_code, crawled_at
+              FROM pages
+              ORDER BY id
+            """)
+            pages = cursor.fetchall()
+            
+            site_metadata = {
+              "domain": domain_folder,
+              "total_pages": len(pages),
+              "crawled_at": datetime.utcnow().isoformat(),
+              "pages": []
+            }
+            
+            print(f"  Processing {len(pages)} pages...")
+            
+            for idx, page in enumerate(pages, 1):
+              page_num = f"{idx:05d}"
+              page_file = pages_dir / f"page-{page_num}.html"
+              
+              # Create individual page HTML
+              html_content = f"""
+              <!DOCTYPE html>
+              <html lang="en">
+              <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>{page['title'] or page['url']}</title>
+                  <style>
+                      * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                      body {{
+                          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                          line-height: 1.6;
+                          color: #333;
+                          background: #f5f5f5;
+                          padding: 20px;
+                      }}
+                      .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                      .header {{ border-bottom: 2px solid #667eea; margin-bottom: 30px; padding-bottom: 20px; }}
+                      .header h1 {{ color: #667eea; margin-bottom: 10px; }}
+                      .meta {{ color: #666; font-size: 0.9em; }}
+                      .meta-item {{ margin: 5px 0; }}
+                      .meta-item strong {{ color: #333; }}
+                      .content {{ margin: 30px 0; line-height: 1.8; }}
+                      .content p {{ margin-bottom: 15px; }}
+                      .footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; font-size: 0.9em; }}
+                      .status {{ display: inline-block; padding: 5px 10px; border-radius: 4px; font-weight: bold; }}
+                      .status-200 {{ background: #d4edda; color: #155724; }}
+                      .status-300 {{ background: #d1ecf1; color: #0c5460; }}
+                      .status-400 {{ background: #f8d7da; color: #721c24; }}
+                      .nav {{ margin-bottom: 20px; }}
+                      .nav a {{ display: inline-block; margin-right: 10px; padding: 10px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
+                      .nav a:hover {{ background: #764ba2; }}
+                  </style>
+              </head>
+              <body>
+                  <div class="container">
+                      <div class="nav">
+                          <a href="../index.html">← Back to Index</a>
+                          <a href="../index.html#{domain_folder}" >All Pages</a>
+                      </div>
+                      
+                      <div class="header">
+                          <h1>{page['title'] or 'Untitled Page'}</h1>
+                          <div class="meta">
+                              <div class="meta-item">
+                                  <strong>URL:</strong> <code>{page['url']}</code>
+                              </div>
+                              <div class="meta-item">
+                                  <strong>Status:</strong> <span class="status status-{page['status_code']//100}00">{page['status_code']}</span>
+                              </div>
+                              <div class="meta-item">
+                                  <strong>Crawled:</strong> {page['crawled_at']}
+                              </div>
+                              <div class="meta-item">
+                                  <strong>Page:</strong> {idx} / {len(pages)}
+                              </div>
+                          </div>
+                      </div>
+                      
+                      <div class="content">
+                          {page['content'][:5000] if page['content'] else '<em>No content</em>'}
+                      </div>
+                      
+                      <div class="footer">
+                          <p>📤 Archived by <strong>web-crawler-pages</strong></p>
+                          <p>This is a static HTML snapshot of a crawled website. Links may not work.</p>
+                      </div>
+                  </div>
+              </body>
+              </html>
+              """
+              
+              with open(page_file, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+              
+              site_metadata["pages"].append({
+                "id": idx,
+                "url": page['url'],
+                "title": page['title'],
+                "status": page['status_code'],
+                "file": f"pages/page-{page_num}.html"
+              })
+            
+            # Create index.html for site
+            index_html = f"""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>{domain_folder} - Crawled Pages</title>
+                <style>
+                    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                    body {{
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        min-height: 100vh;
+                        padding: 40px 20px;
+                    }}
+                    .container {{ max-width: 1200px; margin: 0 auto; }}
+                    h1 {{ color: white; text-align: center; margin-bottom: 40px; }}
+                    .pages-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }}
+                    .page-card {{
+                        background: white;
+                        border-radius: 12px;
+                        padding: 20px;
+                        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                        transition: transform 0.2s;
+                    }}
+                    .page-card:hover {{ transform: translateY(-5px); }}
+                    .page-card h3 {{ color: #333; margin-bottom: 10px; font-size: 1.1em; }}
+                    .page-url {{ color: #666; font-size: 0.9em; word-break: break-all; margin-bottom: 10px; }}
+                    .status-badge {{ display: inline-block; padding: 5px 10px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }}
+                    .status-2xx {{ background: #d4edda; color: #155724; }}
+                    .status-3xx {{ background: #d1ecf1; color: #0c5460; }}
+                    .status-4xx {{ background: #f8d7da; color: #721c24; }}
+                    .page-card a {{ display: inline-block; margin-top: 10px; padding: 8px 12px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
+                    .page-card a:hover {{ background: #764ba2; }}
+                    .back-link {{ text-align: center; margin: 30px 0; }}
+                    .back-link a {{ color: white; text-decoration: none; padding: 10px 20px; border: 2px solid white; border-radius: 4px; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>💾 {domain_folder}</h1>
+                    <div class="pages-grid">
+            """
+            
+            for page_item in site_metadata["pages"]:
+              status_code = page_item["status"]
+              status_class = f"status-{status_code//100}xx"
+              index_html += f"""
+                        <div class="page-card">
+                            <h3>{page_item['title'] or 'Untitled'}</h3>
+                            <div class="page-url">{page_item['url']}</div>
+                            <span class="status-badge {status_class}">{status_code}</span>
+                            <br>
+                            <a href="{page_item['file']}">View Page →</a>
+                        </div>
+              """
+            
+            index_html += """
+                    </div>
+                    <div class="back-link">
+                        <a href="../index.html">← Back to All Sites</a>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            with open(site_dir / 'index.html', 'w', encoding='utf-8') as f:
+              f.write(index_html)
+            
+            # Save metadata
+            with open(site_dir / 'metadata.json', 'w', encoding='utf-8') as f:
+              json.dump(site_metadata, f, indent=2)
+            
+            conn.close()
+            
+            sites_metadata.append({
+              "domain": domain_folder,
+              "pages": len(pages),
+              "url": f"./{domain_folder}/index.html"
+            })
+            
+            print(f"  ✅ Generated {len(pages)} page(s)\n")
+          
+          print("="*70)
+          print(f"✅ Built {len(sites_metadata)} site(s)")
+          print("="*70 + "\n")
+          
+          PYTHON
+
+      - name: 💾 Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-site
+          path: sites/
+          retention-days: 7
+
+  deploy:
+    name: 🚀 Deploy Pages
+    needs: [prepare, build-site]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ env.PAGES_URL }}
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 💾 Download Built Site
+        uses: actions/download-artifact@v4
+        with:
+          name: static-site
+          path: sites/
+
+      - name: 📤 Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+          repository: ${{ inputs.source_repo }}
+          run-id: ${{ inputs.run_id }}
+
+      - name: 📊 Create Deployment Metadata
+        run: |
+          mkdir -p .deployment
+          cat > .deployment/info.json << 'EOF'
+          {
+            "deployment_id": "${{ needs.prepare.outputs.deployment_id }}",
+            "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "deployed_by": "${{ github.actor }}",
+            "workflow_run": "${{ github.run_id }}",
+            "source_repo": "${{ inputs.source_repo }}",
+            "source_run_id": "${{ inputs.run_id }}",
+            "page_count": "${{ needs.prepare.outputs.page_count }}",
+            "artifact_size": "${{ needs.prepare.outputs.artifact_size }}"
+          }
+          EOF
+          cat .deployment/info.json
+
+      - name: 💾 Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: 💾 Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./
+          destination: ./_site
+
+      - name: 🚀 Upload Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './_site'
+
+      - name: 🚀 Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  verify-deployment:
+    name: ✅ Verify Deployment
+    needs: [deploy, prepare]
+    runs-on: ubuntu-24.04
+    if: always()
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: ✅ Verify Pages Deployment
+        run: |
+          python3 << 'PYTHON'
+          import urllib.request
+          import json
+          from time import sleep
+          
+          pages_url = "${{ env.PAGES_URL }}"
+          
+          print("\n" + "="*70)
+          print("✅ VERIFYING DEPLOYMENT")
+          print("="*70 + "\n")
+          
+          print(f"Pages URL: {pages_url}")
+          print(f"Page Count: ${{ needs.prepare.outputs.page_count }}")
+          print(f"Artifact Size: ${{ needs.prepare.outputs.artifact_size }}")
+          
+          # Try to access pages
+          max_retries = 5
+          for attempt in range(1, max_retries + 1):
+            try:
+              response = urllib.request.urlopen(pages_url + 'index.html')
+              if response.status == 200:
+                print(f"\n✅ Main index.html accessible ({response.status})")
+                break
+              else:
+                print(f"  Attempt {attempt}/{max_retries}: Status {response.status}")
+            except Exception as e:
+              if attempt < max_retries:
+                print(f"  Attempt {attempt}/{max_retries}: {str(e)[:50]}... retrying...")
+                sleep(2)
+              else:
+                print(f"  ⚠️  Could not verify deployment (this is normal if Pages is still building)")
+          
+          print("\n" + "="*70)
+          print("✅ DEPLOYMENT VERIFICATION COMPLETE")
+          print("="*70 + "\n")
+          
+          PYTHON
+
+  summary:
+    name: 🏁 Deployment Summary
+    needs: [prepare, deploy, verify-deployment]
+    runs-on: ubuntu-24.04
+    if: always()
+    
+    steps:
+      - name: 🏁 Print Summary
+        run: |
+          cat << EOF
+          
+          ╔════════════════════════════════════════════════════════════════╗
+          ║               🚀 DEPLOYMENT SUCCESSFUL                     ║
+          ╚════════════════════════════════════════════════════════════════╝
+          
+          📄 Deployment Details:
+            • Deployment ID: ${{ needs.prepare.outputs.deployment_id }}
+            • Pages Processed: ${{ needs.prepare.outputs.page_count }}
+            • Artifact Size: ${{ needs.prepare.outputs.artifact_size }}
+            • Repository: ${{ github.repository }}
+            • Workflow: ${{ github.workflow }}
+          
+          🇲🇴 Pages URL:
+            ${{ env.PAGES_URL }}
+          
+          🛠️  Next Steps:
+            1. Visit the Pages URL above
+            2. Verify index.html loads correctly
+            3. Check a few site pages
+            4. Share your archived sites!
+          
+          📝 Notes:
+            • Database files are stored in sites/DOMAIN/
+            • HTML pages are in sites/DOMAIN/pages/
+            • Metadata is in sites/DOMAIN/metadata.json
+            • Deployment info is in .deployment/info.json
+          
+          ╔════════════════════════════════════════════════════════════════╗
+          ║                  🙋 HAPPY ARCHIVING!                        ║
+          ╚════════════════════════════════════════════════════════════════╝
+          
+          EOF

@@ -8,7 +8,7 @@ on:
         required: true
         default: 'KomarovAI/web-crawler'
       run_id:
-        description: 'Workflow run ID from source repo'
+        description: 'Workflow run ID from source repo (numeric ID, not SHA)'
         required: true
       site_domain:
         description: 'Site domain name (for folder)'
@@ -30,23 +30,57 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
+      - name: Validate Run ID
+        env:
+          RUN_ID_INPUT: ${{ github.event.inputs.run_id }}
+        run: |
+          # Check if it's a valid numeric ID (not a SHA)
+          if [[ "$RUN_ID_INPUT" =~ ^sha256: ]]; then
+            echo "❌ ERROR: You passed a SHA hash instead of Run ID!"
+            echo ""
+            echo "How to get the correct Run ID:"
+            echo "  1. Go to: https://github.com/KomarovAI/web-crawler/actions"
+            echo "  2. Click on the workflow run"
+            echo "  3. Look at the URL: ...runs/XXXXXXXX (that's your Run ID)"
+            echo "  4. Or use: gh run list -R KomarovAI/web-crawler -L 1"
+            exit 1
+          fi
+          
+          if ! [[ "$RUN_ID_INPUT" =~ ^[0-9]+$ ]]; then
+            echo "❌ ERROR: Run ID must be numeric! Got: $RUN_ID_INPUT"
+            exit 1
+          fi
+          
+          echo "✅ Run ID is valid: $RUN_ID_INPUT"
+      
       - name: Download artifacts from source repo
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_REPO: ${{ github.event.inputs.source_repo || 'KomarovAI/web-crawler' }}
           RUN_ID: ${{ github.event.inputs.run_id }}
         run: |
+          echo "📔 Downloading artifacts from: $SOURCE_REPO (Run: $RUN_ID)"
+          echo ""
+          
           # Get artifacts from source repo
           gh run download "$RUN_ID" --repo "$SOURCE_REPO" --dir ./artifacts || {
             echo "❌ Failed to download artifacts"
-            echo "Make sure:"
-            echo "  - RUN_ID is correct"
-            echo "  - SOURCE_REPO is accessible"
-            echo "  - Artifacts exist and not expired"
+            echo ""
+            echo "Troubleshooting:"
+            echo "  1. Check Run ID: $RUN_ID"
+            echo "  2. Check repo: $SOURCE_REPO"
+            echo "  3. Check if artifacts haven't expired (90-day retention)"
+            echo "  4. Check if crawler run finished successfully"
+            echo ""
+            echo "Commands to verify:"
+            echo "  gh run list -R $SOURCE_REPO -L 5"
+            echo "  gh run view <RUN_ID> -R $SOURCE_REPO"
             exit 1
           }
           
-          echo "✅ Artifacts downloaded"
+          echo "✅ Artifacts downloaded successfully!"
+          echo ""
+          echo "Contents:"
           ls -lah artifacts/
       
       - name: Extract databases

@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Source repo (owner/repo)'
+        description: 'Source repo (owner/repo) or artifact SHA256'
         required: true
         default: 'KomarovAI/web-crawler'
       run_id:
-        description: 'Workflow run ID from source repo (numeric ID, not SHA)'
+        description: 'Workflow run ID OR artifact SHA256 hash'
         required: true
       site_domain:
         description: 'Site domain name (for folder)'
@@ -30,35 +30,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Validate Run ID
+      - name: Resolve Run ID from SHA256 hash
         env:
           RUN_ID_INPUT: ${{ github.event.inputs.run_id }}
+          SOURCE_REPO: ${{ github.event.inputs.source_repo || 'KomarovAI/web-crawler' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Check if it's a valid numeric ID (not a SHA)
+          # Check if it's a SHA256 hash
           if [[ "$RUN_ID_INPUT" =~ ^sha256: ]]; then
-            echo "❌ ERROR: You passed a SHA hash instead of Run ID!"
-            echo ""
-            echo "How to get the correct Run ID:"
-            echo "  1. Go to: https://github.com/KomarovAI/web-crawler/actions"
-            echo "  2. Click on the workflow run"
-            echo "  3. Look at the URL: ...runs/XXXXXXXX (that's your Run ID)"
-            echo "  4. Or use: gh run list -R KomarovAI/web-crawler -L 1"
-            exit 1
+            echo "🔍 Found SHA256 hash, looking up Run ID..."
+            ARTIFACT_SHA="$RUN_ID_INPUT"
+            
+            # Get list of recent runs and search for matching artifact
+            echo "🔍 Scanning recent runs for artifact: ${ARTIFACT_SHA:0:16}..."
+            
+            FOUND_RUN_ID=""
+            # Check last 50 runs
+            for run_id in $(gh run list -R "$SOURCE_REPO" -L 50 --json databaseId -q '.[].databaseId'); do
+              echo "  Checking run: $run_id"
+              
+              # Get artifacts for this run
+              artifacts=$(gh api -H "Accept: application/vnd.github+json" /repos/$SOURCE_REPO/actions/runs/$run_id/artifacts --jq '.artifacts[].digest' 2>/dev/null || true)
+              
+              if echo "$artifacts" | grep -q "$ARTIFACT_SHA"; then
+                echo "✅ Found! Run ID: $run_id"
+                FOUND_RUN_ID="$run_id"
+                break
+              fi
+            done
+            
+            if [ -z "$FOUND_RUN_ID" ]; then
+              echo "❌ Could not find run with artifact SHA: $ARTIFACT_SHA"
+              echo ""
+              echo "Try:"
+              echo "  1. Copy the full SHA from the download log"
+              echo "  2. Or use numeric Run ID instead"
+              exit 1
+            fi
+            
+            echo "RUN_ID=$FOUND_RUN_ID" >> $GITHUB_ENV
+          else
+            # Use as-is (numeric Run ID)
+            echo "RUN_ID=$RUN_ID_INPUT" >> $GITHUB_ENV
           fi
-          
-          if ! [[ "$RUN_ID_INPUT" =~ ^[0-9]+$ ]]; then
-            echo "❌ ERROR: Run ID must be numeric! Got: $RUN_ID_INPUT"
-            exit 1
-          fi
-          
-          echo "✅ Run ID is valid: $RUN_ID_INPUT"
       
       - name: Download artifacts from source repo
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_REPO: ${{ github.event.inputs.source_repo || 'KomarovAI/web-crawler' }}
-          RUN_ID: ${{ github.event.inputs.run_id }}
         run: |
+          RUN_ID="${{ env.RUN_ID }}"
           echo "📔 Downloading artifacts from: $SOURCE_REPO (Run: $RUN_ID)"
           echo ""
           
@@ -74,7 +95,7 @@ jobs:
             echo ""
             echo "Commands to verify:"
             echo "  gh run list -R $SOURCE_REPO -L 5"
-            echo "  gh run view <RUN_ID> -R $SOURCE_REPO"
+            echo "  gh run view $RUN_ID -R $SOURCE_REPO"
             exit 1
           }
           

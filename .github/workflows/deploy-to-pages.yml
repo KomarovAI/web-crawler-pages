@@ -36,6 +36,16 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
+      - name: 📦 Extract ZIP archives
+        run: |
+          cd artifacts
+          for zip in $(find . -name "*.zip" -type f); do
+            dir=$(dirname "$zip")
+            unzip -q "$zip" -d "$dir"
+            rm "$zip"
+          done
+          cd ..
+
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
@@ -135,6 +145,16 @@ jobs:
           repository: ${{ inputs.source_repo }}
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
+
+      - name: 📦 Extract ZIP archives
+        run: |
+          cd artifacts
+          for zip in $(find . -name "*.zip" -type f); do
+            dir=$(dirname "$zip")
+            unzip -q "$zip" -d "$dir"
+            rm "$zip"
+          done
+          cd ..
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
@@ -237,7 +257,7 @@ jobs:
               html_content += f'<h3>{title}</h3>\n'
               html_content += f'<p>{url}</p>\n'
               html_content += f'<small>Status: {status}</small>\n'
-              html_content += f'<a href="pages/page-{page_num}.html">View \u2192</a>\n'
+              html_content += f'<a href="pages/page-{page_num}.html">View →</a>\n'
               html_content += '</div>\n'
             
             html_content += '</div>\n'
@@ -273,7 +293,7 @@ jobs:
               page_html += '<body>\n'
               page_html += '<div class="container">\n'
               page_html += '<div class="nav" style="margin-bottom: 20px;">\n'
-              page_html += '<a href="../index.html">\u2190 Back</a>\n'
+              page_html += '<a href="../index.html">← Back</a>\n'
               page_html += '</div>\n'
               page_html += '<div class="header">\n'
               page_html += f'<h1>{(page["title"] or "Page")[:50]}</h1>\n'

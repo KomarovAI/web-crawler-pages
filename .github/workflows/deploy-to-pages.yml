@@ -51,7 +51,7 @@ jobs:
           db_files = list(artifacts_dir.glob('db-*/*.db'))
           
           print(f"\n🔍 Searching in: {artifacts_dir}")
-          print(f📂 Directory contents: {list(artifacts_dir.iterdir())}")
+          print(f"📂 Directory contents: {list(artifacts_dir.iterdir())}")
           
           if not db_files:
             print("❌ No database files found!")
@@ -166,50 +166,49 @@ jobs:
             print(f"  📄 {len(pages)} pages")
             
             # Create index page
-            index_html = f"""<!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>{domain_folder}</title>
-            <style>
-              * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-              body {{ 
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                padding: 40px 20px;
-              }}
-              .container {{ max-width: 1200px; margin: 0 auto; }}
-              h1 {{ color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }}
-              .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }}
-              .card {{
-                background: white;
-                border-radius: 8px;
-                padding: 20px;
-                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-                transition: transform 0.2s;
-              }}
-              .card:hover {{ transform: translateY(-5px); }}
-              .card h3 {{ color: #333; margin-bottom: 10px; }}
-              .card p {{ color: #666; font-size: 0.9em; word-break: break-all; }}
-              .card a {{
-                display: inline-block;
-                margin-top: 15px;
-                padding: 8px 12px;
-                background: #667eea;
-                color: white;
-                text-decoration: none;
-                border-radius: 4px;
-              }}
-              .card a:hover {{ background: #764ba2; }}
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h1>📦 {domain_folder}</h1>
-              <div class="grid">
-          """
+            html_content = '<!DOCTYPE html>\n'
+            html_content += '<html lang="en">\n'
+            html_content += '<head>\n'
+            html_content += '<meta charset="UTF-8">\n'
+            html_content += '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+            html_content += f'<title>{domain_folder}</title>\n'
+            html_content += '<style>\n'
+            html_content += '* { margin: 0; padding: 0; box-sizing: border-box; }\n'
+            html_content += 'body { \n'
+            html_content += '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;\n'
+            html_content += '  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n'
+            html_content += '  min-height: 100vh;\n'
+            html_content += '  padding: 40px 20px;\n'
+            html_content += '}\n'
+            html_content += '.container { max-width: 1200px; margin: 0 auto; }\n'
+            html_content += 'h1 { color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }\n'
+            html_content += '.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }\n'
+            html_content += '.card {\n'
+            html_content += '  background: white;\n'
+            html_content += '  border-radius: 8px;\n'
+            html_content += '  padding: 20px;\n'
+            html_content += '  box-shadow: 0 4px 15px rgba(0,0,0,0.2);\n'
+            html_content += '  transition: transform 0.2s;\n'
+            html_content += '}\n'
+            html_content += '.card:hover { transform: translateY(-5px); }\n'
+            html_content += '.card h3 { color: #333; margin-bottom: 10px; }\n'
+            html_content += '.card p { color: #666; font-size: 0.9em; word-break: break-all; }\n'
+            html_content += '.card a {\n'
+            html_content += '  display: inline-block;\n'
+            html_content += '  margin-top: 15px;\n'
+            html_content += '  padding: 8px 12px;\n'
+            html_content += '  background: #667eea;\n'
+            html_content += '  color: white;\n'
+            html_content += '  text-decoration: none;\n'
+            html_content += '  border-radius: 4px;\n'
+            html_content += '}\n'
+            html_content += '.card a:hover { background: #764ba2; }\n'
+            html_content += '</style>\n'
+            html_content += '</head>\n'
+            html_content += '<body>\n'
+            html_content += '<div class="container">\n'
+            html_content += f'<h1>\U0001f4c6 {domain_folder}</h1>\n'
+            html_content += '<div class="grid">\n'
             
             for idx, page in enumerate(pages, 1):
               page_num = f"{idx:05d}"
@@ -217,60 +216,59 @@ jobs:
               url = page['url'][:60]
               status = page['status_code']
               
-              index_html += f"""              <div class="card">
-                <h3>{title}</h3>
-                <p>{url}</p>
-                <small>Status: {status}</small>
-                <a href="pages/page-{page_num}.html">View →</a>
-              </div>
-          """
+              html_content += '<div class="card">\n'
+              html_content += f'<h3>{title}</h3>\n'
+              html_content += f'<p>{url}</p>\n'
+              html_content += f'<small>Status: {status}</small>\n'
+              html_content += f'<a href="pages/page-{page_num}.html">View \u2192</a>\n'
+              html_content += '</div>\n'
             
-            index_html += f"""              </div>
-            </div>
-          </body>
-          </html>"""
+            html_content += '</div>\n'
+            html_content += '</div>\n'
+            html_content += '</body>\n'
+            html_content += '</html>\n'
             
             with open(site_dir / 'index.html', 'w', encoding='utf-8') as f:
-              f.write(index_html)
+              f.write(html_content)
             
             # Create individual page files
             for idx, page in enumerate(pages, 1):
               page_num = f"{idx:05d}"
               page_file = pages_dir / f"page-{page_num}.html"
               
-              page_html = f"""<!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>{(page['title'] or 'Page')[:50]}</title>
-            <style>
-              * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-              body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }}
-              .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 30px; }}
-              .header {{ border-bottom: 2px solid #667eea; margin-bottom: 30px; }}
-              .header h1 {{ color: #667eea; }}
-              .meta {{ color: #666; font-size: 0.9em; margin: 5px 0; }}
-              .nav a {{ display: inline-block; padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
-              .nav a:hover {{ background: #764ba2; }}
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <div class="nav" style="margin-bottom: 20px;">
-                <a href="../index.html">← Back</a>
-              </div>
-              <div class="header">
-                <h1>{(page['title'] or 'Page')[:50]}</h1>
-                <div class="meta"><b>URL:</b> {page['url']}</div>
-                <div class="meta"><b>Status:</b> {page['status_code']}</div>
-              </div>
-              <div style="margin-top: 30px; line-height: 1.8;">
-          {(page['content'] or '')[:5000]}
-              </div>
-            </div>
-          </body>
-          </html>"""
+              page_html = '<!DOCTYPE html>\n'
+              page_html += '<html lang="en">\n'
+              page_html += '<head>\n'
+              page_html += '<meta charset="UTF-8">\n'
+              page_html += '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+              page_html += f'<title>{(page["title"] or "Page")[:50]}</title>\n'
+              page_html += '<style>\n'
+              page_html += '* { margin: 0; padding: 0; box-sizing: border-box; }\n'
+              page_html += 'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; }\n'
+              page_html += '.container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; }\n'
+              page_html += '.header { border-bottom: 2px solid #667eea; margin-bottom: 30px; }\n'
+              page_html += '.header h1 { color: #667eea; }\n'
+              page_html += '.meta { color: #666; font-size: 0.9em; margin: 5px 0; }\n'
+              page_html += '.nav a { display: inline-block; padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }\n'
+              page_html += '.nav a:hover { background: #764ba2; }\n'
+              page_html += '</style>\n'
+              page_html += '</head>\n'
+              page_html += '<body>\n'
+              page_html += '<div class="container">\n'
+              page_html += '<div class="nav" style="margin-bottom: 20px;">\n'
+              page_html += '<a href="../index.html">\u2190 Back</a>\n'
+              page_html += '</div>\n'
+              page_html += '<div class="header">\n'
+              page_html += f'<h1>{(page["title"] or "Page")[:50]}</h1>\n'
+              page_html += f'<div class="meta"><b>URL:</b> {page["url"]}</div>\n'
+              page_html += f'<div class="meta"><b>Status:</b> {page["status_code"]}</div>\n'
+              page_html += '</div>\n'
+              page_html += '<div style="margin-top: 30px; line-height: 1.8;">\n'
+              page_html += (page['content'] or '')[:5000]
+              page_html += '\n</div>\n'
+              page_html += '</div>\n'
+              page_html += '</body>\n'
+              page_html += '</html>\n'
               
               with open(page_file, 'w', encoding='utf-8') as f:
                 f.write(page_html)

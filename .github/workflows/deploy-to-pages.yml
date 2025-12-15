@@ -46,16 +46,31 @@ jobs:
           import sqlite3
           from pathlib import Path
           import sys
+          import os
           
           artifacts_dir = Path('artifacts')
-          db_files = list(artifacts_dir.glob('db-*/*.db'))
           
           print(f"\n🔍 Searching in: {artifacts_dir}")
+          
+          # Check if artifacts directory exists
+          if not artifacts_dir.exists():
+            print(f"❌ Artifacts directory does not exist!")
+            print(f"📖 Current working directory: {os.getcwd()}")
+            print(f"📂 Contents of current dir: {os.listdir('.')}")
+            print("\n⚠️  Make sure:")
+            print("  1. Run ID is CORRECT (from web-crawler Actions tab)")
+            print("  2. That run has completed successfully")
+            print("  3. Artifacts were uploaded in that run")
+            sys.exit(1)
+          
           print(f"📂 Directory contents: {list(artifacts_dir.iterdir())}")
+          
+          db_files = list(artifacts_dir.glob('db-*/*.db'))
           
           if not db_files:
             print("❌ No database files found!")
-            print("⚠️  Make sure:")
+            print("⚠️  Looking for pattern: db-*/*.db")
+            print("\n⚠️  Make sure:")
             print("  1. Run ID is CORRECT (from web-crawler Actions tab)")
             print("  2. That run has completed successfully")
             print("  3. Artifacts were uploaded")

@@ -1,0 +1,351 @@
+name: 🌐 Full Site Crawler & Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      site_url:
+        description: 'URL to crawl'
+        required: true
+        default: 'https://callmedley.com'
+      max_pages:
+        description: 'Max pages to crawl'
+        required: true
+        default: '100'
+
+jobs:
+  crawl-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install aiohttp beautifulsoup4 python-dotenv
+      
+      - name: Crawl website
+        env:
+          SITE_URL: ${{ github.event.inputs.site_url }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages }}
+        run: |
+          python3 << 'PYTHON'
+          import asyncio
+          import os
+          import json
+          from pathlib import Path
+          from urllib.parse import urljoin, urlparse
+          from html import escape
+          import aiohttp
+          from bs4 import BeautifulSoup
+          
+          class WebCrawler:
+              def __init__(self, start_url, max_pages=100):
+                  self.start_url = start_url
+                  self.max_pages = max_pages
+                  self.domain = urlparse(start_url).netloc
+                  self.visited = set()
+                  self.queue = [start_url]
+                  self.pages = {}
+              
+              def is_valid_url(self, url):
+                  parsed = urlparse(url)
+                  return (
+                      parsed.netloc == self.domain and
+                      url not in self.visited and
+                      len(self.visited) < self.max_pages
+                  )
+              
+              async def fetch(self, session, url):
+                  try:
+                      async with session.get(url, timeout=10, ssl=False) as resp:
+                          if resp.status == 200:
+                              return await resp.text()
+                  except:
+                      pass
+                  return None
+              
+              def extract_links(self, html, base_url):
+                  links = []
+                  try:
+                      soup = BeautifulSoup(html, 'html.parser')
+                      for a in soup.find_all('a', href=True):
+                          link = urljoin(base_url, a.get('href'))
+                          if self.is_valid_url(link):
+                              links.append(link)
+                  except:
+                      pass
+                  return links
+              
+              def get_title(self, html):
+                  try:
+                      soup = BeautifulSoup(html, 'html.parser')
+                      title = soup.find('title')
+                      return title.text if title else 'Untitled'
+                  except:
+                      return 'Untitled'
+              
+              async def run(self):
+                  async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=5, ssl=False)) as session:
+                      while self.queue and len(self.visited) < self.max_pages:
+                          url = self.queue.pop(0)
+                          if url in self.visited:
+                              continue
+                          
+                          self.visited.add(url)
+                          print(f"[{len(self.visited)}/{self.max_pages}] {url}")
+                          
+                          html = await self.fetch(session, url)
+                          if html:
+                              title = self.get_title(html)
+                              self.pages[url] = {'html': html, 'title': title}
+                              links = self.extract_links(html, url)
+                              self.queue.extend(links)
+                          
+                          await asyncio.sleep(0.2)
+                  
+                  return list(self.pages.values())
+          
+          # Run crawler
+          async def main():
+              crawler = WebCrawler(os.getenv('SITE_URL'), int(os.getenv('MAX_PAGES', 100)))
+              pages = await crawler.run()
+              
+              # Save to JSON for next step
+              with open('crawled_pages.json', 'w') as f:
+                  json.dump(pages, f)
+              
+              print(f"\n✅ Crawled {len(pages)} pages")
+          
+          asyncio.run(main())
+          PYTHON
+      
+      - name: Generate static website
+        run: |
+          python3 << 'PYTHON'
+          import json
+          from pathlib import Path
+          from html import escape
+          from urllib.parse import urlparse
+          
+          with open('crawled_pages.json', 'r') as f:
+              pages = json.load(f)
+          
+          # Create sites directory
+          site_dir = Path('sites/crawled_site')
+          pages_dir = site_dir / 'pages'
+          pages_dir.mkdir(parents=True, exist_ok=True)
+          
+          # Generate main index
+          main_html = f"""
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>🌐 Crawled Site Archive</title>
+              <style>
+                  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                  body {{
+                      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      min-height: 100vh;
+                      padding: 40px 20px;
+                  }}
+                  .container {{
+                      max-width: 1200px;
+                      margin: 0 auto;
+                      background: white;
+                      padding: 40px;
+                      border-radius: 12px;
+                      box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+                  }}
+                  h1 {{ color: #333; margin-bottom: 30px; text-align: center; }}
+                  .stats {{
+                      background: #f5f5f5;
+                      padding: 20px;
+                      border-radius: 8px;
+                      margin-bottom: 30px;
+                      text-align: center;
+                    }}
+                  .page-list {{ list-style: none; }}
+                  .page-item {{ padding: 15px; margin: 10px 0; background: #f9f9f9; border-left: 4px solid #667eea; border-radius: 4px; }}
+                  .page-item a {{ color: #667eea; text-decoration: none; font-weight: 500; }}
+                  .page-item a:hover {{ text-decoration: underline; }}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🌐 Crawled Website Archive</h1>
+                  <div class="stats">
+                      <h2>{len(pages)} pages crawled</h2>
+                  </div>
+                  <ul class="page-list">
+          """
+          
+          # Generate all page files
+          for idx, page in enumerate(pages, 1):
+              html_content = page.get('html', '')
+              title = escape(page.get('title', 'Untitled')[:80])
+              
+              # Create page HTML with wrapper
+              page_html = f"""
+              <!DOCTYPE html>
+              <html lang="en">
+              <head>
+                  <meta charset="UTF-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>{title}</title>
+                  <style>
+                      * {{ margin: 0; padding: 0; }}
+                      body {{
+                          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                          background: #f5f5f5;
+                          padding: 20px;
+                          line-height: 1.6;
+                      }}
+                      .wrapper {{
+                          max-width: 1200px;
+                          margin: 0 auto;
+                          background: white;
+                          padding: 30px;
+                          border-radius: 8px;
+                          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                      }}
+                      .meta {{
+                          background: #f0f0f0;
+                          padding: 15px;
+                          border-radius: 6px;
+                          margin-bottom: 20px;
+                          border-left: 4px solid #667eea;
+                      }}
+                      .meta p {{ color: #666; font-size: 0.9em; margin: 5px 0; word-break: break-all; }}
+                      .content {{
+                          margin: 30px 0;
+                          padding: 20px 0;
+                          border-bottom: 1px solid #eee;
+                      }}
+                      .nav {{ margin-top: 20px; }}
+                      .nav a {{
+                          display: inline-block;
+                          color: white;
+                          background: #667eea;
+                          padding: 10px 20px;
+                          border-radius: 6px;
+                          text-decoration: none;
+                          margin-right: 10px;
+                          margin-top: 10px;
+                      }}
+                      .nav a:hover {{ background: #764ba2; }}
+                      img {{ max-width: 100%; height: auto; }}
+                  </style>
+              </head>
+              <body>
+                  <div class="wrapper">
+                      <div class="meta">
+                          <p><strong>Page #{idx} of {len(pages)}</strong></p>
+                          <p><strong>Title:</strong> {title}</p>
+                      </div>
+                      <div class="content">
+                          {html_content}
+                      </div>
+                      <div class="nav">
+                          <a href="../">← Back to index</a>
+                          {'<a href="page-' + str(idx-1) + '.html">← Previous</a>' if idx > 1 else ''}
+                          {'<a href="page-' + str(idx+1) + '.html">Next →</a>' if idx < len(pages) else ''}
+                      </div>
+                  </div>
+              </body>
+              </html>
+              """
+              
+              # Save page
+              with open(pages_dir / f'page-{idx}.html', 'w', encoding='utf-8') as f:
+                  f.write(page_html)
+              
+              # Add to main index
+              main_html += f'<li class="page-item"><a href="pages/page-{idx}.html">📄 Page {idx}: {title}</a></li>'
+          
+          main_html += "</ul></div></body></html>"
+          
+          # Save main index
+          with open(site_dir / 'index.html', 'w', encoding='utf-8') as f:
+              f.write(main_html)
+          
+          # Create root index
+          root_index = f"""
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <title>Crawled Sites</title>
+              <style>
+                  * {{ margin: 0; padding: 0; }}
+                  body {{
+                      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      min-height: 100vh;
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      padding: 20px;
+                  }}
+                  .container {{ text-align: center; }}
+                  h1 {{ color: white; font-size: 3em; margin-bottom: 20px; }}
+                  .btn {{
+                      display: inline-block;
+                      background: white;
+                      color: #667eea;
+                      padding: 15px 40px;
+                      border-radius: 8px;
+                      text-decoration: none;
+                      font-weight: bold;
+                      font-size: 1.1em;
+                      margin-top: 20px;
+                  }}
+                  .btn:hover {{ transform: scale(1.05); }}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🌐 Crawled Website</h1>
+                  <p style="color: white; font-size: 1.2em;">{len(pages)} pages archived</p>
+                  <a href="sites/crawled_site/" class="btn">Browse Archive →</a>
+              </div>
+          </body>
+          </html>
+          """
+          
+          with open('index.html', 'w', encoding='utf-8') as f:
+              f.write(root_index)
+          
+          print(f"✅ Generated {len(pages)} pages")
+          PYTHON
+      
+      - name: Commit and push
+        run: |
+          git config user.name "🤖 Crawler Bot"
+          git config user.email "action@github.com"
+          git add index.html sites/ 2>/dev/null || true
+          git commit -m "🌐 Deploy: $(date +'%Y-%m-%d %H:%M UTC') - $(find sites -name '*.html' | wc -l) pages" || echo "No changes"
+          git push origin main 2>/dev/null || true
+      
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+      
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+      
+      - name: Deploy
+        uses: actions/deploy-pages@v4

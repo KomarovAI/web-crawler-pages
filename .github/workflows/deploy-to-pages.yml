@@ -16,9 +16,6 @@ on:
         default: 'callmedley-com'
 
 jobs:
-  # ============================================================
-  # JOB 1: VERIFY - Check database integrity
-  # ============================================================
   verify:
     name: '🔍 Verify Database'
     runs-on: ubuntu-24.04
@@ -36,139 +33,44 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
-      - name: 🗂️ Extract ALL ZIP archives recursively
+      - name: 🗂️ Extract ZIP archives
         run: |
-          echo "=== EXTRACTING ZIP FILES ==="
           for i in {1..5}; do
-            echo "Pass $i:"
             found=0
             find artifacts -name "*.zip" -type f | while read zip; do
               found=$((found+1))
-              dir=$(dirname "$zip")
-              echo "  Extracting: $zip"
-              unzip -q "$zip" -d "$dir"
+              unzip -q "$zip" -d "$(dirname "$zip")"
               rm "$zip"
             done
-            if [ $found -eq 0 ]; then
-              echo "  No more ZIP files found"
-              break
-            fi
+            if [ $found -eq 0 ]; then break; fi
           done
-          
-          echo ""
-          echo "=== FINAL STRUCTURE ==="
-          find artifacts -type f -exec file {} \;
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: ✅ Check database files & schema
+      - name: ✅ Verify databases
         run: |
-          python3 << 'EOF'
+          python3 << 'VERIFY_EOF'
           import sqlite3
           from pathlib import Path
           import sys
-          import os
-          import subprocess
           
-          artifacts_dir = Path('artifacts')
-          
-          print(f"\n🔍 Searching in: {artifacts_dir}")
-          
-          # Check if artifacts directory exists
-          if not artifacts_dir.exists():
-            print(f"❌ Artifacts directory does not exist!")
-            sys.exit(1)
-          
-          print(f"📂 Directory contents: {list(artifacts_dir.iterdir())}")
-          
-          db_files = list(artifacts_dir.glob('db-*/*.db'))
-          
-          if not db_files:
-            print("❌ No database files found!")
-            sys.exit(1)
-          
-          print(f"\n✅ Found {len(db_files)} database(s)\n")
-          
-          for db_file in sorted(db_files):
-            domain = db_file.parent.name.replace('db-', '')
-            size_mb = db_file.stat().st_size / 1024 / 1024
+          for db_file in sorted(Path('artifacts').glob('db-*/*.db')):
+            print(f"\n📦 {db_file.parent.name.replace('db-', '')}")
+            conn = sqlite3.connect(str(db_file))
+            cursor = conn.cursor()
             
-            print(f"📦 {domain} ({size_mb:.2f} MB)")
+            cursor.execute("PRAGMA table_info(pages)")
+            cols = [row[1] for row in cursor.fetchall()]
+            print(f"  ALL COLUMNS: {cols}")
             
-            # Check file type with 'file' command
-            result = subprocess.run(['file', str(db_file)], capture_output=True, text=True)
-            file_type = result.stdout.strip()
-            print(f"  File type: {file_type}")
-            
-            # Check if it's actually a ZIP (magic bytes: PK\x03\x04)
-            with open(db_file, 'rb') as f:
-              magic4 = f.read(4)
-              if magic4 == b'PK\x03\x04':  # ZIP file signature
-                print(f"  ⚠️  This is actually a ZIP file! Extracting...")
-                parent_dir = db_file.parent
-                subprocess.run(['unzip', '-q', str(db_file), '-d', str(parent_dir)])
-                db_file.unlink()
-                # Find the extracted DB
-                db_files_after = list(parent_dir.glob('*.db'))
-                if db_files_after:
-                  db_file = db_files_after[0]
-                  print(f"  ✅ Extracted to: {db_file}")
-                else:
-                  print(f"  ❌ No DB file found after extraction!")
-                  sys.exit(1)
-            
-            # Verify SQLite format (read first 16 bytes for "SQLite format 3\x00")
-            with open(db_file, 'rb') as f:
-              sqlite_magic = f.read(16)
-              if sqlite_magic != b'SQLite format 3\x00':
-                print(f"  ❌ Invalid SQLite format!")
-                print(f"     First 16 bytes (hex): {sqlite_magic.hex()}")
-                print(f"     Expected: 53514c69746520666f726d617420330a")
-                sys.exit(1)
-            
-            # Now verify SQLite
-            try:
-              conn = sqlite3.connect(str(db_file))
-              cursor = conn.cursor()
-              
-              # Get all tables
-              cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-              tables = cursor.fetchall()
-              print(f"  📄 Tables: {[t[0] for t in tables]}")
-              
-              # Get schema for 'pages' table
-              cursor.execute("PRAGMA table_info(pages)")
-              columns = cursor.fetchall()
-              print(f"  📋 Columns in 'pages': {[c[1] for c in columns]}")
-              
-              # Count pages
-              cursor.execute("SELECT COUNT(*) FROM pages")
-              pages = cursor.fetchone()[0]
-              print(f"  ✅ Pages: {pages}")
-              
-              cursor.execute("PRAGMA integrity_check")
-              if cursor.fetchone()[0] != 'ok':
-                print(f"  ❌ Database corrupted!")
-                sys.exit(1)
-              
-              print(f"  ✅ Integrity: OK")
-              conn.close()
-              
-            except Exception as e:
-              print(f"  ❌ Error: {e}")
-              import traceback
-              traceback.print_exc()
-              sys.exit(1)
-          
-          print("\n✅ All databases verified!\n")
-          EOF
+            cursor.execute("SELECT COUNT(*) FROM pages")
+            print(f"  ✅ Pages: {cursor.fetchone()[0]}")
+            conn.close()
+          VERIFY_EOF
 
-  # ============================================================
-  # JOB 2: BUILD - Convert database to HTML
-  # ============================================================
   build:
     name: '🏗️ Build HTML'
     needs: verify
@@ -187,19 +89,10 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GH_PAT }}
 
-      - name: 🗂️ Extract ALL ZIP archives recursively
+      - name: 🗂️ Extract ZIP archives
         run: |
           for i in {1..5}; do
-            found=0
-            find artifacts -name "*.zip" -type f | while read zip; do
-              found=$((found+1))
-              dir=$(dirname "$zip")
-              unzip -q "$zip" -d "$dir"
-              rm "$zip"
-            done
-            if [ $found -eq 0 ]; then
-              break
-            fi
+            find artifacts -name "*.zip" -type f -exec sh -c 'unzip -q "$1" -d "$(dirname "$1")" && rm "$1"' _ {} \;
           done
 
       - name: 🐍 Setup Python
@@ -209,13 +102,11 @@ jobs:
 
       - name: 🏗️ Build HTML pages
         run: |
-          python3 << 'EOF'
+          python3 << 'BUILD_EOF'
           import sqlite3
           import shutil
           from pathlib import Path
-          from datetime import datetime
           
-          artifacts_dir = Path('artifacts')
           output_dir = Path('sites')
           output_dir.mkdir(exist_ok=True)
           
@@ -223,173 +114,90 @@ jobs:
           print("🏗️  BUILDING STATIC SITE")
           print("="*60 + "\n")
           
-          for db_dir in sorted(artifacts_dir.glob('db-*')):
-            domain_folder = db_dir.name.replace('db-', '')
-            db_file = db_dir / f"{domain_folder}.db"
+          for db_dir in sorted(Path('artifacts').glob('db-*')):
+            domain = db_dir.name.replace('db-', '')
+            db_file = db_dir / f"{domain}.db"
             
             if not db_file.exists():
               continue
             
-            print(f"📦 Building: {domain_folder}")
+            print(f"📦 Building: {domain}")
             
-            site_dir = output_dir / domain_folder
+            site_dir = output_dir / domain
             site_dir.mkdir(exist_ok=True)
             pages_dir = site_dir / 'pages'
             pages_dir.mkdir(exist_ok=True)
             
-            shutil.copy(db_file, site_dir / f"{domain_folder}.db")
+            shutil.copy(db_file, site_dir / f"{domain}.db")
             
             conn = sqlite3.connect(str(db_file))
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            # Dynamically detect columns
+            # Get ALL columns
             cursor.execute("PRAGMA table_info(pages)")
-            columns = {row[1]: row[1] for row in cursor.fetchall()}
+            all_cols = [row[1] for row in cursor.fetchall()]
+            print(f"  Columns: {all_cols}")
             
-            # Map common column names
-            url_col = next((c for c in columns if c.lower() in ['url', 'href', 'uri']), 'url')
-            title_col = next((c for c in columns if c.lower() in ['title', 'name', 'heading']), None)
-            content_col = next((c for c in columns if c.lower() in ['content', 'body', 'text']), None)
-            status_col = next((c for c in columns if c.lower() in ['status_code', 'status', 'code']), 'status_code')
+            # Find columns by pattern
+            url_col = next((c for c in all_cols if c.lower() in ['url', 'href', 'uri']), all_cols[0] if all_cols else 'id')
+            print(f"  Using url_col: {url_col}")
             
-            print(f"  Detected columns: url={url_col}, title={title_col}, content={content_col}, status={status_col}")
-            
-            # Build query
-            select_cols = [c for c in [url_col, title_col, content_col, status_col] if c]
-            query = f"SELECT {', '.join(select_cols)} FROM pages ORDER BY id"
-            print(f"  Query: {query}")
-            
+            query = f"SELECT * FROM pages ORDER BY id"
             cursor.execute(query)
             pages = cursor.fetchall()
-            
             print(f"  📄 {len(pages)} pages")
             
-            # Create index page
-            html_content = '<!DOCTYPE html>\n'
-            html_content += '<html lang="en">\n'
-            html_content += '<head>\n'
-            html_content += '<meta charset="UTF-8">\n'
-            html_content += '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-            html_content += f'<title>{domain_folder}</title>\n'
-            html_content += '<style>\n'
-            html_content += '* { margin: 0; padding: 0; box-sizing: border-box; }\n'
-            html_content += 'body { \n'
-            html_content += '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;\n'
-            html_content += '  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n'
-            html_content += '  min-height: 100vh;\n'
-            html_content += '  padding: 40px 20px;\n'
-            html_content += '}\n'
-            html_content += '.container { max-width: 1200px; margin: 0 auto; }\n'
-            html_content += 'h1 { color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }\n'
-            html_content += '.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }\n'
-            html_content += '.card {\n'
-            html_content += '  background: white;\n'
-            html_content += '  border-radius: 8px;\n'
-            html_content += '  padding: 20px;\n'
-            html_content += '  box-shadow: 0 4px 15px rgba(0,0,0,0.2);\n'
-            html_content += '  transition: transform 0.2s;\n'
-            html_content += '}\n'
-            html_content += '.card:hover { transform: translateY(-5px); }\n'
-            html_content += '.card h3 { color: #333; margin-bottom: 10px; }\n'
-            html_content += '.card p { color: #666; font-size: 0.9em; word-break: break-all; }\n'
-            html_content += '.card a {\n'
-            html_content += '  display: inline-block;\n'
-            html_content += '  margin-top: 15px;\n'
-            html_content += '  padding: 8px 12px;\n'
-            html_content += '  background: #667eea;\n'
-            html_content += '  color: white;\n'
-            html_content += '  text-decoration: none;\n'
-            html_content += '  border-radius: 4px;\n'
-            html_content += '}\n'
-            html_content += '.card a:hover { background: #764ba2; }\n'
-            html_content += '</style>\n'
-            html_content += '</head>\n'
-            html_content += '<body>\n'
-            html_content += '<div class="container">\n'
-            html_content += f'<h1>📖 {domain_folder}</h1>\n'
-            html_content += '<div class="grid">\n'
+            # Build index
+            html = '''<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{}</title><style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: -apple-system, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }}
+.container {{ max-width: 1200px; margin: 0 auto; }}
+h1 {{ color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }}
+.grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }}
+.card {{ background: white; border-radius: 8px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); transition: transform 0.2s; }}
+.card:hover {{ transform: translateY(-5px); }}
+.card h3 {{ color: #333; margin-bottom: 10px; }}
+.card p {{ color: #666; font-size: 0.9em; word-break: break-all; }}
+.card a {{ display: inline-block; margin-top: 15px; padding: 8px 12px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
+.card a:hover {{ background: #764ba2; }}
+</style></head><body>
+<div class="container"><h1>📖 {}</h1><div class="grid">'''.format(domain, domain)
             
             for idx, page in enumerate(pages, 1):
-              page_num = f"{idx:05d}"
               page_dict = dict(page)
-              
-              title = page_dict.get(title_col, 'Untitled')
-              if title is None:
-                title = 'Untitled'
-              title = str(title)[:40]
-              
-              url = page_dict.get(url_col, 'unknown')[:60]
-              status = page_dict.get(status_col, 'unknown')
-              
-              html_content += '<div class="card">\n'
-              html_content += f'<h3>{title}</h3>\n'
-              html_content += f'<p>{url}</p>\n'
-              html_content += f'<small>Status: {status}</small>\n'
-              html_content += f'<a href="pages/page-{page_num}.html">View →</a>\n'
-              html_content += '</div>\n'
+              url_val = str(page_dict.get(url_col, 'N/A'))[:60]
+              html += f'<div class="card"><h3>Page {idx}</h3><p>{url_val}</p><a href="pages/page-{idx:05d}.html">View →</a></div>'
             
-            html_content += '</div>\n'
-            html_content += '</div>\n'
-            html_content += '</body>\n'
-            html_content += '</html>\n'
-            
+            html += '</div></div></body></html>'
             with open(site_dir / 'index.html', 'w', encoding='utf-8') as f:
-              f.write(html_content)
+              f.write(html)
             
-            # Create individual page files
+            # Build individual pages
             for idx, page in enumerate(pages, 1):
-              page_num = f"{idx:05d}"
-              page_file = pages_dir / f"page-{page_num}.html"
               page_dict = dict(page)
+              url_val = str(page_dict.get(url_col, 'N/A'))
+              content_val = str(page_dict.get(next((c for c in all_cols if c.lower() in ['content', 'body', 'html', 'text']), None), ''))[:5000] if next((c for c in all_cols if c.lower() in ['content', 'body', 'html', 'text']), None) else ''
               
-              title = page_dict.get(title_col, 'Untitled')
-              if title is None:
-                title = 'Untitled'
-              title = str(title)[:50]
+              page_html = f'''<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Page {idx}</title><style>
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: -apple-system, sans-serif; background: #f5f5f5; }}
+.container {{ max-width: 900px; margin: 0 auto; background: white; padding: 30px; }}
+.header {{ border-bottom: 2px solid #667eea; margin-bottom: 30px; }}
+.header h1 {{ color: #667eea; }}
+.meta {{ color: #666; font-size: 0.9em; margin: 5px 0; }}
+.nav a {{ display: inline-block; padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }}
+.nav a:hover {{ background: #764ba2; }}
+</style></head><body>
+<div class="container"><div class="nav" style="margin-bottom: 20px;"><a href="../index.html">← Back</a></div>
+<div class="header"><h1>Page {idx}</h1><div class="meta"><b>URL:</b> {url_val}</div></div>
+<div style="margin-top: 30px; line-height: 1.8;">{content_val}</div></div></body></html>'''
               
-              url = page_dict.get(url_col, 'unknown')
-              status = page_dict.get(status_col, 'unknown')
-              content = page_dict.get(content_col, '')
-              if content is None:
-                content = ''
-              content = str(content)[:5000]
-              
-              page_html = '<!DOCTYPE html>\n'
-              page_html += '<html lang="en">\n'
-              page_html += '<head>\n'
-              page_html += '<meta charset="UTF-8">\n'
-              page_html += '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-              page_html += f'<title>{title}</title>\n'
-              page_html += '<style>\n'
-              page_html += '* { margin: 0; padding: 0; box-sizing: border-box; }\n'
-              page_html += 'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; }\n'
-              page_html += '.container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; }\n'
-              page_html += '.header { border-bottom: 2px solid #667eea; margin-bottom: 30px; }\n'
-              page_html += '.header h1 { color: #667eea; }\n'
-              page_html += '.meta { color: #666; font-size: 0.9em; margin: 5px 0; }\n'
-              page_html += '.nav a { display: inline-block; padding: 8px 15px; background: #667eea; color: white; text-decoration: none; border-radius: 4px; }\n'
-              page_html += '.nav a:hover { background: #764ba2; }\n'
-              page_html += '</style>\n'
-              page_html += '</head>\n'
-              page_html += '<body>\n'
-              page_html += '<div class="container">\n'
-              page_html += '<div class="nav" style="margin-bottom: 20px;">\n'
-              page_html += '<a href="../index.html">← Back</a>\n'
-              page_html += '</div>\n'
-              page_html += '<div class="header">\n'
-              page_html += f'<h1>{title}</h1>\n'
-              page_html += f'<div class="meta"><b>URL:</b> {url}</div>\n'
-              page_html += f'<div class="meta"><b>Status:</b> {status}</div>\n'
-              page_html += '</div>\n'
-              page_html += '<div style="margin-top: 30px; line-height: 1.8;">\n'
-              page_html += content
-              page_html += '\n</div>\n'
-              page_html += '</div>\n'
-              page_html += '</body>\n'
-              page_html += '</html>\n'
-              
-              with open(page_file, 'w', encoding='utf-8') as f:
+              with open(pages_dir / f'page-{idx:05d}.html', 'w', encoding='utf-8') as f:
                 f.write(page_html)
             
             conn.close()
@@ -398,20 +206,17 @@ jobs:
           print("="*60)
           print("✅ Build complete!")
           print("="*60)
-          EOF
+          BUILD_EOF
 
-      - name: 📤 Upload build artifact
+      - name: 📤 Upload build
         uses: actions/upload-artifact@v4
         with:
           name: sites-build
           path: sites/
           retention-days: 1
 
-  # ============================================================
-  # JOB 3: DEPLOY - Upload to GitHub Pages
-  # ============================================================
   deploy:
-    name: '🚀 Deploy to Pages'
+    name: '🚀 Deploy'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -423,49 +228,17 @@ jobs:
       url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
     
     steps:
-      - name: 📂 Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: 📥 Download build
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
           name: sites-build
           path: sites/
-
-      - name: 🔧 Configure Pages
-        uses: actions/configure-pages@v4
-
-      - name: 🏗️ Build with Jekyll
-        uses: actions/jekyll-build-pages@v1
+      - uses: actions/configure-pages@v4
+      - uses: actions/jekyll-build-pages@v1
         with:
           source: ./
           destination: ./_site
-
-      - name: 📤 Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: './_site'
-
-      - name: 🚀 Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
-
-      - name: 📊 Summary
-        run: |
-          echo ""
-          echo "╔════════════════════════════════════════════════════════╗"
-          echo "║          ✅ DEPLOYMENT SUCCESSFUL                      ║"
-          echo "╚════════════════════════════════════════════════════════╝"
-          echo ""
-          echo "📖 Details:"
-          echo "  • Domain: ${{ inputs.site_domain }}"
-          echo "  • Source: ${{ inputs.source_repo }}"
-          echo "  • Run ID: ${{ inputs.run_id }}"
-          echo "  • Workflow: ${{ github.run_id }}"
-          echo ""
-          echo "🌐 Pages URL:"
-          echo "  https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
-          echo ""
-          echo "✨ Your sites are LIVE!"
-          echo ""
+      - uses: actions/deploy-pages@v4

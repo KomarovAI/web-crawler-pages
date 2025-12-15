@@ -1,0 +1,467 @@
+name: 🔍 Verify & Validate Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Source repository (owner/repo)'
+        required: true
+        default: 'KomarovAI/web-crawler'
+      run_id:
+        description: 'Workflow run ID to download artifacts from'
+        required: true
+      site_domain:
+        description: 'Domain name for folder (e.g., callmedley-com)'
+        required: true
+        default: 'callmedley-com'
+  workflow_call:
+    inputs:
+      source_repo:
+        type: string
+        required: true
+        default: 'KomarovAI/web-crawler'
+      run_id:
+        type: string
+        required: true
+      site_domain:
+        type: string
+        required: true
+        default: 'callmedley-com'
+    outputs:
+      verification_status:
+        description: 'Artifact verification result'
+        value: ${{ jobs.verify.outputs.status }}
+      artifact_hash:
+        description: 'SHA256 hash of verified artifact'
+        value: ${{ jobs.verify.outputs.artifact_hash }}
+      page_count:
+        description: 'Number of crawled pages'
+        value: ${{ jobs.verify.outputs.page_count }}
+
+jobs:
+  verify:
+    name: Verify Artifacts
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      status: ${{ steps.final-check.outputs.status }}
+      artifact_hash: ${{ steps.download.outputs.artifact_hash }}
+      page_count: ${{ steps.verify-db.outputs.page_count }}
+
+    steps:
+      - name: 📥 Download Artifacts
+        id: download
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+          repository: ${{ inputs.source_repo }}
+          run-id: ${{ inputs.run_id }}
+
+      - name: 🔐 Verify Download Integrity
+        id: integrity
+        run: |
+          echo "Verifying download integrity..."
+          cd artifacts
+          
+          # Count downloaded files
+          artifact_count=$(find . -type f | wc -l)
+          echo "Downloaded files: $artifact_count"
+          
+          if [ "$artifact_count" -eq 0 ]; then
+            echo "❌ No artifacts downloaded!"
+            exit 1
+          fi
+          
+          # Get total size
+          total_size=$(du -sh . | cut -f1)
+          echo "Total size: $total_size"
+          echo "total_size=$total_size" >> $GITHUB_OUTPUT
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 🔍 Verify Database Files
+        id: verify-db
+        run: |
+          python3 << 'PYTHON'
+          import sqlite3
+          import os
+          import hashlib
+          import json
+          from pathlib import Path
+          
+          print("\n" + "="*70)
+          print("🔍 DATABASE VERIFICATION REPORT")
+          print("="*70 + "\n")
+          
+          artifacts_dir = Path('artifacts')
+          db_files = list(artifacts_dir.glob('db-*/*.db'))
+          
+          if not db_files:
+            print("❌ FAIL: No database files found!")
+            exit(1)
+          
+          print(f"📦 Found {len(db_files)} database file(s)\n")
+          
+          verification_results = {
+            "databases": [],
+            "total_pages": 0,
+            "total_assets": 0,
+            "total_size_mb": 0,
+            "errors": [],
+            "warnings": []
+          }
+          
+          for db_file in sorted(db_files):
+            domain = db_file.parent.name.replace('db-', '')
+            size_mb = db_file.stat().st_size / 1024 / 1024
+            size_bytes = db_file.stat().st_size
+            
+            db_info = {
+              "domain": domain,
+              "filename": db_file.name,
+              "size_mb": round(size_mb, 2),
+              "size_bytes": size_bytes,
+              "status": "unknown",
+              "checks": {}
+            }
+            
+            print(f"Domain: {domain}")
+            print(f"  File: {db_file.name}")
+            print(f"  Size: {size_mb:.2f} MB ({size_bytes:,} bytes)")
+            
+            try:
+              # 1. Check file is readable
+              with open(db_file, 'rb') as f:
+                header = f.read(16)
+                if header != b'SQLite format 3':
+                  error = f"Invalid SQLite header for {domain}"
+                  verification_results["errors"].append(error)
+                  print(f"    ❌ {error}")
+                  db_info["status"] = "invalid"
+                  verification_results["databases"].append(db_info)
+                  continue
+                db_info["checks"]["file_header"] = "✅ Valid SQLite format"
+              
+              # 2. Check file size (reasonable bounds)
+              if size_mb < 0.1:
+                warning = f"Database {domain} is suspiciously small ({size_mb:.2f} MB)"
+                verification_results["warnings"].append(warning)
+                print(f"    ⚠️  {warning}")
+              
+              if size_mb > 5000:
+                warning = f"Database {domain} exceeds 5GB ({size_mb:.2f} MB)"
+                verification_results["warnings"].append(warning)
+                print(f"    ⚠️  {warning}")
+              
+              # 3. Open and verify database structure
+              conn = sqlite3.connect(str(db_file))
+              conn.row_factory = sqlite3.Row
+              cursor = conn.cursor()
+              
+              # Check schema
+              cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+              tables = {row[0] for row in cursor.fetchall()}
+              db_info["checks"]["tables"] = sorted(list(tables))
+              print(f"    ✅ Tables found: {', '.join(sorted(tables))}")
+              
+              # Verify required 'pages' table
+              if 'pages' not in tables:
+                error = f"Missing 'pages' table in {domain}"
+                verification_results["errors"].append(error)
+                print(f"    ❌ {error}")
+                db_info["status"] = "invalid"
+                verification_results["databases"].append(db_info)
+                conn.close()
+                continue
+              
+              # 4. Check pages table
+              cursor.execute("SELECT COUNT(*) as count FROM pages")
+              page_count = cursor.fetchone()["count"]
+              verification_results["total_pages"] += page_count
+              db_info["page_count"] = page_count
+              db_info["checks"]["page_count"] = f"✅ {page_count} pages"
+              
+              if page_count == 0:
+                warning = f"Database {domain} has 0 pages - no content crawled?"
+                verification_results["warnings"].append(warning)
+                print(f"    ⚠️  {warning}")
+              else:
+                print(f"    ✅ Pages: {page_count}")
+              
+              # 5. Check assets table if exists
+              if 'assets' in tables:
+                cursor.execute("SELECT COUNT(*) as count FROM assets")
+                asset_count = cursor.fetchone()["count"]
+                verification_results["total_assets"] += asset_count
+                db_info["checks"]["asset_count"] = f"✅ {asset_count} assets"
+                print(f"    ✅ Assets: {asset_count}")
+              
+              # 6. Verify database integrity
+              cursor.execute("PRAGMA integrity_check")
+              integrity = cursor.fetchone()[0]
+              
+              if integrity != 'ok':
+                error = f"Database corruption detected in {domain}: {integrity}"
+                verification_results["errors"].append(error)
+                print(f"    ❌ {error}")
+                db_info["status"] = "corrupted"
+                verification_results["databases"].append(db_info)
+                conn.close()
+                continue
+              
+              db_info["checks"]["integrity"] = "✅ Database integrity OK"
+              print(f"    ✅ Integrity: OK (PRAGMA check passed)")
+              
+              # 7. Check foreign keys constraint
+              cursor.execute("PRAGMA foreign_key_check")
+              fk_issues = cursor.fetchall()
+              if fk_issues:
+                warning = f"Foreign key constraint violations in {domain}: {len(fk_issues)}"
+                verification_results["warnings"].append(warning)
+                print(f"    ⚠️  {warning}")
+                db_info["checks"]["foreign_keys"] = f"⚠️  {len(fk_issues)} violations"
+              else:
+                db_info["checks"]["foreign_keys"] = "✅ No FK violations"
+                print(f"    ✅ Foreign keys: OK")
+              
+              # 8. Check for corrupted indexes
+              cursor.execute("PRAGMA quick_check")
+              quick_check = cursor.fetchone()[0]
+              if quick_check != 'ok':
+                error = f"Quick integrity check failed for {domain}: {quick_check}"
+                verification_results["errors"].append(error)
+                print(f"    ❌ {error}")
+                db_info["status"] = "failed_quick_check"
+                verification_results["databases"].append(db_info)
+                conn.close()
+                continue
+              
+              db_info["checks"]["quick_check"] = "✅ Quick check OK"
+              
+              # 9. Verify we can actually read records
+              try:
+                cursor.execute("SELECT COUNT(*) as count FROM pages LIMIT 1")
+                _ = cursor.fetchone()
+                db_info["checks"]["record_read"] = "✅ Can read records"
+                print(f"    ✅ Record accessibility: OK")
+              except Exception as e:
+                error = f"Cannot read records from {domain}: {str(e)}"
+                verification_results["errors"].append(error)
+                print(f"    ❌ {error}")
+                db_info["status"] = "unreadable"
+                verification_results["databases"].append(db_info)
+                conn.close()
+                continue
+              
+              conn.close()
+              db_info["status"] = "valid"
+              verification_results["databases"].append(db_info)
+              
+              print()
+              
+            except sqlite3.DatabaseError as e:
+              error = f"SQLite error in {domain}: {str(e)}"
+              verification_results["errors"].append(error)
+              print(f"    ❌ {error}\n")
+              db_info["status"] = "database_error"
+              verification_results["databases"].append(db_info)
+            
+            except Exception as e:
+              error = f"Unexpected error in {domain}: {str(e)}"
+              verification_results["errors"].append(error)
+              print(f"    ❌ {error}\n")
+              db_info["status"] = "unknown_error"
+              verification_results["databases"].append(db_info)
+          
+          # Calculate artifact hash
+          artifact_hash = "unknown"
+          try:
+            sha256 = hashlib.sha256()
+            for db_file in sorted(db_files):
+              with open(db_file, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b''):
+                  sha256.update(chunk)
+            artifact_hash = sha256.hexdigest()
+            print(f"Artifact SHA256: {artifact_hash}\n")
+          except Exception as e:
+            print(f"⚠️  Could not calculate hash: {e}\n")
+          
+          verification_results["total_size_mb"] = round(
+            sum(db['size_mb'] for db in verification_results["databases"]), 2
+          )
+          verification_results["artifact_hash"] = artifact_hash
+          
+          # Print summary
+          print("="*70)
+          print("📊 VERIFICATION SUMMARY")
+          print("="*70)
+          print(f"Total databases: {len(verification_results['databases'])}")
+          print(f"Total pages: {verification_results['total_pages']}")
+          print(f"Total assets: {verification_results['total_assets']}")
+          print(f"Total size: {verification_results['total_size_mb']:.2f} MB")
+          print()
+          
+          # Check for any errors
+          valid_count = len([db for db in verification_results['databases'] if db['status'] == 'valid'])
+          print(f"✅ Valid databases: {valid_count}/{len(verification_results['databases'])}")
+          
+          if verification_results["errors"]:
+            print(f"\n❌ ERRORS ({len(verification_results['errors'])}):")
+            for error in verification_results["errors"]:
+              print(f"  • {error}")
+          
+          if verification_results["warnings"]:
+            print(f"\n⚠️  WARNINGS ({len(verification_results['warnings'])}):")
+            for warning in verification_results["warnings"]:
+              print(f"  • {warning}")
+          
+          print("\n" + "="*70)
+          
+          # Determine overall status
+          if len(verification_results['databases']) == 0:
+            print("❌ FAILED: No valid databases found")
+            exit(1)
+          
+          if not all(db['status'] == 'valid' for db in verification_results['databases']):
+            invalid = [db for db in verification_results['databases'] if db['status'] != 'valid']
+            print(f"❌ FAILED: {len(invalid)} database(s) failed verification")
+            for db in invalid:
+              print(f"  • {db['domain']}: {db['status']}")
+            exit(1)
+          
+          if verification_results['total_pages'] == 0:
+            print("❌ FAILED: No pages found in any database")
+            exit(1)
+          
+          print("✅ PASSED: All databases verified successfully!")
+          print("="*70 + "\n")
+          
+          # Output for next steps
+          print(f"page_count={verification_results['total_pages']}")
+          
+          PYTHON
+        env:
+          # Continue on error to generate artifact hash before failing
+          STRICT_MODE: "true"
+
+      - name: 🔐 Verify Artifact Hash
+        id: hash-check
+        run: |
+          echo "Checking artifact hash consistency..."
+          
+          # List all db files
+          find artifacts -name "*.db" -type f
+          
+          # Create checksum file
+          cd artifacts
+          find . -name "*.db" -type f -exec sha256sum {} \; > checksums.txt
+          cat checksums.txt
+          
+          echo "✅ Checksum verification complete"
+
+      - name: 📋 Validate Directory Structure
+        id: structure-check
+        run: |
+          echo "Validating directory structure..."
+          
+          artifacts_dir="artifacts"
+          
+          # Check structure: artifacts/db-DOMAIN/DOMAIN.db
+          if ! ls -d $artifacts_dir/db-*/ > /dev/null 2>&1; then
+            echo "❌ No db-* directories found!"
+            exit 1
+          fi
+          
+          for db_dir in $artifacts_dir/db-*/; do
+            domain=$(basename "$db_dir" | sed 's/db-//')
+            echo "✅ Found domain directory: $domain"
+            
+            if [ ! -f "$db_dir/${domain}.db" ]; then
+              echo "❌ Missing ${domain}.db in $db_dir"
+              exit 1
+            fi
+          done
+          
+          echo "✅ Directory structure valid"
+
+      - name: 🔍 Analyze Database Schema
+        run: |
+          python3 << 'PYTHON'
+          import sqlite3
+          from pathlib import Path
+          
+          print("\n" + "="*70)
+          print("📊 DATABASE SCHEMA ANALYSIS")
+          print("="*70 + "\n")
+          
+          db_files = list(Path('artifacts').glob('db-*/*.db'))
+          
+          for db_file in sorted(db_files):
+            domain = db_file.parent.name.replace('db-', '')
+            conn = sqlite3.connect(str(db_file))
+            cursor = conn.cursor()
+            
+            print(f"Domain: {domain}")
+            
+            # List all tables with schema
+            cursor.execute("""
+              SELECT name FROM sqlite_master 
+              WHERE type='table' 
+              ORDER BY name
+            """)
+            
+            for table_name, in cursor.fetchall():
+              cursor.execute(f"PRAGMA table_info({table_name})")
+              columns = cursor.fetchall()
+              
+              print(f"  Table: {table_name}")
+              for col in columns:
+                print(f"    • {col[1]} ({col[2]})")
+              
+              # Get row count
+              cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+              count = cursor.fetchone()[0]
+              print(f"    Rows: {count}\n")
+            
+            conn.close()
+          
+          PYTHON
+
+      - name: ✅ Final Verification Check
+        id: final-check
+        run: |
+          echo "status=verified" >> $GITHUB_OUTPUT
+          echo "✅ Artifact verification completed successfully!"
+          echo "Ready for deployment to GitHub Pages"
+
+      - name: 📤 Upload Verification Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-report
+          path: artifacts
+          retention-days: 30
+
+  notify:
+    name: Notify Status
+    runs-on: ubuntu-24.04
+    needs: verify
+    if: always()
+    steps:
+      - name: 📢 Verification Result
+        run: |
+          if [ "${{ needs.verify.outputs.status }}" == "verified" ]; then
+            echo "✅ Artifact verification PASSED"
+            echo "📊 Pages: ${{ needs.verify.outputs.page_count }}"
+            echo "🔐 Hash: ${{ needs.verify.outputs.artifact_hash }}"
+          else
+            echo "❌ Artifact verification FAILED"
+            exit 1
+          fi

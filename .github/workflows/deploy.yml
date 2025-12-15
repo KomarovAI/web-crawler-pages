@@ -84,47 +84,39 @@ jobs:
           echo ""
           
           # Get artifacts from source repo
-          gh run download "$RUN_ID" --repo "$SOURCE_REPO" --dir ./artifacts || {
+          gh run download "$RUN_ID" --repo "$SOURCE_REPO" --dir ./artifacts-temp || {
             echo "❌ Failed to download artifacts"
             echo ""
             echo "Troubleshooting:"
             echo "  1. Check Run ID: $RUN_ID"
             echo "  2. Check repo: $SOURCE_REPO"
             echo "  3. Check if artifacts haven't expired (90-day retention)"
-            echo "  4. Check if crawler run finished successfully"
-            echo ""
-            echo "Commands to verify:"
-            echo "  gh run list -R $SOURCE_REPO -L 5"
-            echo "  gh run view $RUN_ID -R $SOURCE_REPO"
             exit 1
           }
           
           echo "✅ Artifacts downloaded successfully!"
-          echo ""
-          echo "Contents:"
-          ls -lah artifacts/
+          ls -lah artifacts-temp/
       
-      - name: Extract databases
+      - name: Extract and process databases
         run: |
           mkdir -p sites
           
           # Find all .db files in artifacts
-          find artifacts -name "*.db" -type f | while read db_file; do
+          find artifacts-temp -name "*.db" -type f | while read db_file; do
             dir_name=$(dirname "$db_file")
             domain=$(basename "$dir_name" | sed 's/^db-//')
             
-            echo "Processing: $domain"
+            echo "🔍 Processing: $domain"
             mkdir -p "sites/$domain"
+            
+            # Copy DB (will be in .gitignore, not committed)
             cp "$db_file" "sites/$domain/"
+            echo "✅ Database copied for $domain"
           done
-          
-          echo "✅ Databases extracted"
-          find sites -type f
       
-      - name: Generate index pages
+      - name: Generate main index page
         run: |
           python3 << 'PYTHON'
-          import os
           import sqlite3
           from pathlib import Path
           from html import escape
@@ -133,7 +125,7 @@ jobs:
           sites_dir = Path('sites')
           
           # Main index
-          main_html = f"""
+          main_html = """
           <!DOCTYPE html>
           <html lang="en">
           <head>
@@ -141,57 +133,56 @@ jobs:
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
               <title>🕷️ Crawled Sites Archive</title>
               <style>
-                  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                  body {{
+                  * { margin: 0; padding: 0; box-sizing: border-box; }
+                  body {
                       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
                       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                       min-height: 100vh;
                       padding: 40px 20px;
-                  }}
-                  .container {{
+                  }
+                  .container {
                       max-width: 1200px;
                       margin: 0 auto;
-                  }}
-                  h1 {{
+                  }
+                  h1 {
                       color: white;
                       text-align: center;
                       margin-bottom: 40px;
                       font-size: 2.5em;
                       text-shadow: 0 2px 10px rgba(0,0,0,0.2);
-                  }}
-                  .grid {{
+                  }
+                  .grid {
                       display: grid;
                       grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
                       gap: 20px;
-                  }}
-                  .card {{
+                  }
+                  .card {
                       background: white;
                       border-radius: 12px;
                       padding: 24px;
                       box-shadow: 0 10px 30px rgba(0,0,0,0.2);
                       transition: transform 0.3s, box-shadow 0.3s;
-                      cursor: pointer;
-                  }}
-                  .card:hover {{
+                  }
+                  .card:hover {
                       transform: translateY(-5px);
                       box-shadow: 0 15px 40px rgba(0,0,0,0.3);
-                  }}
-                  .card h2 {{
+                  }
+                  .card h2 {
                       color: #333;
                       margin-bottom: 10px;
                       font-size: 1.3em;
-                  }}
-                  .stats {{
+                  }
+                  .stats {
                       color: #666;
                       font-size: 0.9em;
                       margin: 10px 0;
-                  }}
-                  .stat-item {{
+                  }
+                  .stat-item {
                       padding: 5px 0;
                       display: flex;
                       justify-content: space-between;
-                  }}
-                  .btn {{
+                  }
+                  .btn {
                       display: inline-block;
                       background: #667eea;
                       color: white;
@@ -200,15 +191,15 @@ jobs:
                       text-decoration: none;
                       margin-top: 15px;
                       transition: background 0.3s;
-                  }}
-                  .btn:hover {{
+                  }
+                  .btn:hover {
                       background: #764ba2;
-                  }}
-                  .meta {{
+                  }
+                  .meta {
                       color: #999;
                       font-size: 0.8em;
                       margin-top: 10px;
-                  }}
+                  }
               </style>
           </head>
           <body>
@@ -261,13 +252,9 @@ jobs:
                                   <span>💾 Size:</span>
                                   <strong>{db_size_mb:.1f} MB</strong>
                               </div>
-                              <div class="stat-item">
-                                  <span>🔗 Origin:</span>
-                                  <strong>{escape(first_url[:50])}</strong>
-                              </div>
                           </div>
-                          <a href="./{domain}/index.html" class="btn">📖 View Site</a>
-                          <div class="meta">Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}</div>
+                          <a href="./{domain}/index.html" class="btn">📖 View Pages</a>
+                          <div class="meta">Updated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}</div>
                       </div>
                   """
               except Exception as e:
@@ -283,10 +270,10 @@ jobs:
           with open('index.html', 'w') as f:
               f.write(main_html)
           
-          print("✅ Index pages generated")
+          print("✅ Main index generated")
           PYTHON
       
-      - name: Create site viewers
+      - name: Generate site indexes
         run: |
           python3 << 'PYTHON'
           import sqlite3
@@ -310,8 +297,8 @@ jobs:
                   conn = sqlite3.connect(str(db_file))
                   cursor = conn.cursor()
                   
-                  # Get pages from database
-                  cursor.execute("SELECT url, title, content FROM pages ORDER BY url LIMIT 100")
+                  # Use correct columns from crawler DB
+                  cursor.execute("SELECT url, COALESCE(title, url) FROM pages ORDER BY url LIMIT 100")
                   pages = cursor.fetchall()
                   
                   # Create site directory
@@ -362,27 +349,27 @@ jobs:
                           .page-url:hover {{
                               text-decoration: underline;
                           }}
-                          .page-title {{
-                              color: #666;
-                              font-size: 0.9em;
-                              margin-top: 5px;
+                          .back {{
+                              margin-top: 20px;
+                          }}
+                          .back a {{
+                              color: #667eea;
+                              text-decoration: none;
                           }}
                       </style>
                   </head>
                   <body>
                       <div class="container">
-                          <h1>📄 {escape(domain)} - All Pages ({len(pages)})</h1>
+                          <h1>📄 {escape(domain)} ({len(pages)} pages)</h1>
                           <ul class="page-list">
                   """
                   
-                  for url, title, content in pages:
-                      page_num = len(list(site_path.glob('*.html'))) + 1
+                  for page_num, (url, title) in enumerate(pages, 1):
                       safe_url = f"page-{page_num}.html"
                       
                       site_index += f"""
                           <li class="page-item">
-                              <a href="{safe_url}" class="page-url">🔗 {escape(url[:80])}</a>
-                              <div class="page-title">{escape(title or 'Untitled')}</div>
+                              <a href="{safe_url}" class="page-url">🔗 {escape(url[:70])}</a>
                           </li>
                       """
                       
@@ -393,27 +380,22 @@ jobs:
                       <head>
                           <meta charset="UTF-8">
                           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                          <title>{escape(title or 'Page')}</title>
+                          <title>{escape(title[:60])}</title>
                           <style>
                               body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; background: #f5f5f5; }}
                               .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 20px; border-radius: 6px; }}
                               h1 {{ color: #333; }}
-                              .meta {{ color: #666; font-size: 0.9em; margin: 10px 0; }}
-                              .content {{ margin-top: 20px; line-height: 1.6; }}
+                              .meta {{ color: #999; font-size: 0.85em; margin: 10px 0; }}
                               a {{ color: #667eea; }}
-                              .back {{ margin-top: 20px; }}
-                              .back a {{ text-decoration: none; }}
+                              .back {{ margin-top: 30px; }}
                           </style>
                       </head>
                       <body>
                           <div class="container">
-                              <h1>{escape(title or 'Untitled')}</h1>
-                              <div class="meta">URL: <code>{escape(url)}</code></div>
-                              <div class="content">
-                                  {content[:2000]}...
-                              </div>
+                              <h1>{escape(title[:100])}</h1>
+                              <div class="meta">🔗 {escape(url)}</div>
                               <div class="back">
-                                  <a href="index.html">← Back to index</a>
+                                  <a href="index.html">← Back to list</a>
                               </div>
                           </div>
                       </body>
@@ -434,18 +416,35 @@ jobs:
                       f.write(site_index)
                   
                   conn.close()
-                  print(f"✅ Created viewer for {domain} with {len(pages)} pages")
+                  print(f"✅ {domain}: {len(pages)} pages indexed")
               except Exception as e:
-                  print(f"❌ Error for {domain}: {e}")
+                  print(f"❌ {domain}: {e}")
           PYTHON
       
-      - name: Commit and push
+      - name: Create .gitignore for large files
         run: |
-          git config user.name "🤖 Crawler Bot"
+          cat > .gitignore << 'EOF'
+          # Ignore large database files
+          *.db
+          artifacts-temp/
+          artifacts/
+          
+          # Keep HTML files
+          !sites/*/index.html
+          !sites/*/pages/*.html
+          !index.html
+          EOF
+          
+          git add .gitignore
+          echo "✅ .gitignore created"
+      
+      - name: Commit changes
+        run: |
+          git config user.name "🤖 Deploy Bot"
           git config user.email "action@github.com"
           
-          git add -A
-          git commit -m "🌐 Deploy crawled sites - $(date +'%Y-%m-%d %H:%M UTC')" || echo "No changes"
+          git add index.html sites/*/index.html sites/*/pages/*.html
+          git commit -m "🌐 Deploy: $(date +'%Y-%m-%d %H:%M UTC')" || echo "No changes"
           git push origin main
       
       - name: Setup Pages
@@ -460,14 +459,14 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
       
-      - name: Print summary
+      - name: Summary
         run: |
           echo "============================================================"
           echo "🌐 DEPLOYMENT COMPLETED"
           echo "============================================================"
           echo ""
-          echo "📄 GitHub Pages URL:"
+          echo "📄 Live at:"
           echo "   ${{ steps.deployment.outputs.page_url }}"
           echo ""
-          echo "✅ Sites deployed and ready to view!"
+          echo "✅ All crawled sites deployed!"
           echo "============================================================"

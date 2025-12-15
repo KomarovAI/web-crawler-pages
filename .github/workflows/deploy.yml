@@ -1,0 +1,418 @@
+name: 📄 Deploy Crawled Sites to GitHub Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Source repo (owner/repo)'
+        required: true
+        default: 'KomarovAI/web-crawler'
+      run_id:
+        description: 'Workflow run ID from source repo'
+        required: true
+      site_domain:
+        description: 'Site domain name (for folder)'
+        required: true
+        default: 'callmedley-com'
+  
+  repository_dispatch:
+    types: [deploy-crawled-site]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Download artifacts from source repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ github.event.inputs.source_repo || 'KomarovAI/web-crawler' }}
+          RUN_ID: ${{ github.event.inputs.run_id }}
+        run: |
+          # Get artifacts from source repo
+          gh run download "$RUN_ID" --repo "$SOURCE_REPO" --dir ./artifacts || {
+            echo "❌ Failed to download artifacts"
+            echo "Make sure:"
+            echo "  - RUN_ID is correct"
+            echo "  - SOURCE_REPO is accessible"
+            echo "  - Artifacts exist and not expired"
+            exit 1
+          }
+          
+          echo "✅ Artifacts downloaded"
+          ls -lah artifacts/
+      
+      - name: Extract databases
+        run: |
+          mkdir -p sites
+          
+          # Find all .db files in artifacts
+          find artifacts -name "*.db" -type f | while read db_file; do
+            dir_name=$(dirname "$db_file")
+            domain=$(basename "$dir_name" | sed 's/^db-//')
+            
+            echo "Processing: $domain"
+            mkdir -p "sites/$domain"
+            cp "$db_file" "sites/$domain/"
+          done
+          
+          echo "✅ Databases extracted"
+          find sites -type f
+      
+      - name: Generate index pages
+        run: |
+          python3 << 'PYTHON'
+          import os
+          import sqlite3
+          from pathlib import Path
+          from html import escape
+          from datetime import datetime
+          
+          sites_dir = Path('sites')
+          
+          # Main index
+          main_html = f"""
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>🕷️ Crawled Sites Archive</title>
+              <style>
+                  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                  body {{
+                      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      min-height: 100vh;
+                      padding: 40px 20px;
+                  }}
+                  .container {{
+                      max-width: 1200px;
+                      margin: 0 auto;
+                  }}
+                  h1 {{
+                      color: white;
+                      text-align: center;
+                      margin-bottom: 40px;
+                      font-size: 2.5em;
+                      text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                  }}
+                  .grid {{
+                      display: grid;
+                      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                      gap: 20px;
+                  }}
+                  .card {{
+                      background: white;
+                      border-radius: 12px;
+                      padding: 24px;
+                      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                      transition: transform 0.3s, box-shadow 0.3s;
+                      cursor: pointer;
+                  }}
+                  .card:hover {{
+                      transform: translateY(-5px);
+                      box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+                  }}
+                  .card h2 {{
+                      color: #333;
+                      margin-bottom: 10px;
+                      font-size: 1.3em;
+                  }}
+                  .stats {{
+                      color: #666;
+                      font-size: 0.9em;
+                      margin: 10px 0;
+                  }}
+                  .stat-item {{
+                      padding: 5px 0;
+                      display: flex;
+                      justify-content: space-between;
+                  }}
+                  .btn {{
+                      display: inline-block;
+                      background: #667eea;
+                      color: white;
+                      padding: 10px 20px;
+                      border-radius: 6px;
+                      text-decoration: none;
+                      margin-top: 15px;
+                      transition: background 0.3s;
+                  }}
+                  .btn:hover {{
+                      background: #764ba2;
+                  }}
+                  .meta {{
+                      color: #999;
+                      font-size: 0.8em;
+                      margin-top: 10px;
+                  }}
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🕷️ Crawled Sites Archive</h1>
+                  <div class="grid">
+          """
+          
+          # Find all site directories
+          for site_dir in sorted(sites_dir.iterdir()):
+              if not site_dir.is_dir():
+                  continue
+              
+              db_files = list(site_dir.glob('*.db'))
+              if not db_files:
+                  continue
+              
+              db_file = db_files[0]
+              domain = site_dir.name
+              
+              try:
+                  conn = sqlite3.connect(str(db_file))
+                  cursor = conn.cursor()
+                  
+                  # Get page count
+                  cursor.execute("SELECT COUNT(*) FROM pages")
+                  page_count = cursor.fetchone()[0]
+                  
+                  # Get first page URL
+                  cursor.execute("SELECT url FROM pages LIMIT 1")
+                  first_url = cursor.fetchone()
+                  first_url = first_url[0] if first_url else 'N/A'
+                  
+                  # Get DB size
+                  db_size_mb = db_file.stat().st_size / 1024 / 1024
+                  
+                  conn.close()
+                  
+                  # Create card
+                  domain_display = domain.replace('_', '.')
+                  main_html += f"""
+                      <div class="card">
+                          <h2>🌐 {escape(domain_display)}</h2>
+                          <div class="stats">
+                              <div class="stat-item">
+                                  <span>📄 Pages:</span>
+                                  <strong>{page_count}</strong>
+                              </div>
+                              <div class="stat-item">
+                                  <span>💾 Size:</span>
+                                  <strong>{db_size_mb:.1f} MB</strong>
+                              </div>
+                              <div class="stat-item">
+                                  <span>🔗 Origin:</span>
+                                  <strong>{escape(first_url[:50])}</strong>
+                              </div>
+                          </div>
+                          <a href="./{domain}/index.html" class="btn">📖 View Site</a>
+                          <div class="meta">Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}</div>
+                      </div>
+                  """
+              except Exception as e:
+                  print(f"❌ Error processing {domain}: {e}")
+          
+          main_html += """
+                  </div>
+              </div>
+          </body>
+          </html>
+          """
+          
+          with open('index.html', 'w') as f:
+              f.write(main_html)
+          
+          print("✅ Index pages generated")
+          PYTHON
+      
+      - name: Create site viewers
+        run: |
+          python3 << 'PYTHON'
+          import sqlite3
+          from pathlib import Path
+          from html import escape
+          
+          sites_dir = Path('sites')
+          
+          for site_dir in sites_dir.iterdir():
+              if not site_dir.is_dir():
+                  continue
+              
+              db_files = list(site_dir.glob('*.db'))
+              if not db_files:
+                  continue
+              
+              db_file = db_files[0]
+              domain = site_dir.name
+              
+              try:
+                  conn = sqlite3.connect(str(db_file))
+                  cursor = conn.cursor()
+                  
+                  # Get pages from database
+                  cursor.execute("SELECT url, title, content FROM pages ORDER BY url LIMIT 100")
+                  pages = cursor.fetchall()
+                  
+                  # Create site directory
+                  site_path = site_dir / 'pages'
+                  site_path.mkdir(exist_ok=True)
+                  
+                  # Create index for this site
+                  site_index = f"""
+                  <!DOCTYPE html>
+                  <html lang="en">
+                  <head>
+                      <meta charset="UTF-8">
+                      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                      <title>{escape(domain)} - Pages</title>
+                      <style>
+                          * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                          body {{
+                              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                              background: #f5f5f5;
+                              padding: 20px;
+                          }}
+                          .container {{
+                              max-width: 1000px;
+                              margin: 0 auto;
+                          }}
+                          h1 {{
+                              color: #333;
+                              margin-bottom: 30px;
+                          }}
+                          .page-list {{
+                              list-style: none;
+                          }}
+                          .page-item {{
+                              background: white;
+                              padding: 15px;
+                              margin-bottom: 10px;
+                              border-radius: 6px;
+                              border-left: 4px solid #667eea;
+                          }}
+                          .page-item:hover {{
+                              box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                          }}
+                          .page-url {{
+                              color: #667eea;
+                              text-decoration: none;
+                              font-weight: 500;
+                          }}
+                          .page-url:hover {{
+                              text-decoration: underline;
+                          }}
+                          .page-title {{
+                              color: #666;
+                              font-size: 0.9em;
+                              margin-top: 5px;
+                          }}
+                      </style>
+                  </head>
+                  <body>
+                      <div class="container">
+                          <h1>📄 {escape(domain)} - All Pages ({len(pages)})</h1>
+                          <ul class="page-list">
+                  """
+                  
+                  for url, title, content in pages:
+                      page_num = len(list(site_path.glob('*.html'))) + 1
+                      safe_url = f"page-{page_num}.html"
+                      
+                      site_index += f"""
+                          <li class="page-item">
+                              <a href="{safe_url}" class="page-url">🔗 {escape(url[:80])}</a>
+                              <div class="page-title">{escape(title or 'Untitled')}</div>
+                          </li>
+                      """
+                      
+                      # Create individual page file
+                      page_html = f"""
+                      <!DOCTYPE html>
+                      <html lang="en">
+                      <head>
+                          <meta charset="UTF-8">
+                          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                          <title>{escape(title or 'Page')}</title>
+                          <style>
+                              body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; background: #f5f5f5; }}
+                              .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 20px; border-radius: 6px; }}
+                              h1 {{ color: #333; }}
+                              .meta {{ color: #666; font-size: 0.9em; margin: 10px 0; }}
+                              .content {{ margin-top: 20px; line-height: 1.6; }}
+                              a {{ color: #667eea; }}
+                              .back {{ margin-top: 20px; }}
+                              .back a {{ text-decoration: none; }}
+                          </style>
+                      </head>
+                      <body>
+                          <div class="container">
+                              <h1>{escape(title or 'Untitled')}</h1>
+                              <div class="meta">URL: <code>{escape(url)}</code></div>
+                              <div class="content">
+                                  {content[:2000]}...
+                              </div>
+                              <div class="back">
+                                  <a href="index.html">← Back to index</a>
+                              </div>
+                          </div>
+                      </body>
+                      </html>
+                      """
+                      
+                      with open(site_path / safe_url, 'w') as f:
+                          f.write(page_html)
+                  
+                  site_index += """
+                          </ul>
+                      </div>
+                  </body>
+                  </html>
+                  """
+                  
+                  with open(site_dir / 'index.html', 'w') as f:
+                      f.write(site_index)
+                  
+                  conn.close()
+                  print(f"✅ Created viewer for {domain} with {len(pages)} pages")
+              except Exception as e:
+                  print(f"❌ Error for {domain}: {e}")
+          PYTHON
+      
+      - name: Commit and push
+        run: |
+          git config user.name "🤖 Crawler Bot"
+          git config user.email "action@github.com"
+          
+          git add -A
+          git commit -m "🌐 Deploy crawled sites - $(date +'%Y-%m-%d %H:%M UTC')" || echo "No changes"
+          git push origin main
+      
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+      
+      - name: Upload to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+      
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      
+      - name: Print summary
+        run: |
+          echo "============================================================"
+          echo "🌐 DEPLOYMENT COMPLETED"
+          echo "============================================================"
+          echo ""
+          echo "📄 GitHub Pages URL:"
+          echo "   ${{ steps.deployment.outputs.page_url }}"
+          echo ""
+          echo "✅ Sites deployed and ready to view!"
+          echo "============================================================"

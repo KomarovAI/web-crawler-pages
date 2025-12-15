@@ -1,17 +1,17 @@
-name: 📄 Deploy Crawled Sites to GitHub Pages
+name: 🌐 Deploy Crawled Sites to GitHub Pages
 
 on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: 'Source repo (owner/repo) or artifact SHA256'
+        description: 'Source repo (owner/repo)'
         required: true
         default: 'KomarovAI/web-crawler'
       run_id:
         description: 'Workflow run ID OR artifact SHA256 hash'
         required: true
       site_domain:
-        description: 'Site domain name (for folder)'
+        description: 'Site domain name'
         required: true
         default: 'callmedley-com'
   
@@ -24,7 +24,6 @@ jobs:
     permissions:
       contents: write
       pages: write
-      id-token: write
     
     steps:
       - name: Checkout
@@ -36,22 +35,15 @@ jobs:
           SOURCE_REPO: ${{ github.event.inputs.source_repo || 'KomarovAI/web-crawler' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Check if it's a SHA256 hash
           if [[ "$RUN_ID_INPUT" =~ ^sha256: ]]; then
             echo "🔍 Found SHA256 hash, looking up Run ID..."
             ARTIFACT_SHA="$RUN_ID_INPUT"
-            
-            # Get list of recent runs and search for matching artifact
             echo "🔍 Scanning recent runs for artifact: ${ARTIFACT_SHA:0:16}..."
             
             FOUND_RUN_ID=""
-            # Check last 50 runs
             for run_id in $(gh run list -R "$SOURCE_REPO" -L 50 --json databaseId -q '.[].databaseId'); do
               echo "  Checking run: $run_id"
-              
-              # Get artifacts for this run
               artifacts=$(gh api -H "Accept: application/vnd.github+json" /repos/$SOURCE_REPO/actions/runs/$run_id/artifacts --jq '.artifacts[].digest' 2>/dev/null || true)
-              
               if echo "$artifacts" | grep -q "$ARTIFACT_SHA"; then
                 echo "✅ Found! Run ID: $run_id"
                 FOUND_RUN_ID="$run_id"
@@ -61,60 +53,76 @@ jobs:
             
             if [ -z "$FOUND_RUN_ID" ]; then
               echo "❌ Could not find run with artifact SHA: $ARTIFACT_SHA"
-              echo ""
-              echo "Try:"
-              echo "  1. Copy the full SHA from the download log"
-              echo "  2. Or use numeric Run ID instead"
               exit 1
             fi
-            
             echo "RUN_ID=$FOUND_RUN_ID" >> $GITHUB_ENV
           else
-            # Use as-is (numeric Run ID)
             echo "RUN_ID=$RUN_ID_INPUT" >> $GITHUB_ENV
           fi
       
-      - name: Download artifacts from source repo
+      - name: Download artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_REPO: ${{ github.event.inputs.source_repo || 'KomarovAI/web-crawler' }}
         run: |
           RUN_ID="${{ env.RUN_ID }}"
-          echo "📔 Downloading artifacts from: $SOURCE_REPO (Run: $RUN_ID)"
-          echo ""
-          
-          # Get artifacts from source repo
-          gh run download "$RUN_ID" --repo "$SOURCE_REPO" --dir ./artifacts-temp || {
-            echo "❌ Failed to download artifacts"
-            echo ""
-            echo "Troubleshooting:"
-            echo "  1. Check Run ID: $RUN_ID"
-            echo "  2. Check repo: $SOURCE_REPO"
-            echo "  3. Check if artifacts haven't expired (90-day retention)"
-            exit 1
-          }
-          
-          echo "✅ Artifacts downloaded successfully!"
-          ls -lah artifacts-temp/
+          echo "📔 Downloading from: $SOURCE_REPO (Run: $RUN_ID)"
+          gh run download "$RUN_ID" --repo "$SOURCE_REPO" --dir ./artifacts-temp || exit 1
+          echo "✅ Download complete"
       
-      - name: Extract and process databases
+      - name: Extract databases
         run: |
           mkdir -p sites
-          
-          # Find all .db files in artifacts
           find artifacts-temp -name "*.db" -type f | while read db_file; do
-            dir_name=$(dirname "$db_file")
-            domain=$(basename "$dir_name" | sed 's/^db-//')
-            
-            echo "🔍 Processing: $domain"
+            domain=$(basename $(dirname "$db_file") | sed 's/^db-//')
+            echo "Processing: $domain"
             mkdir -p "sites/$domain"
-            
-            # Copy DB (will be in .gitignore, not committed)
             cp "$db_file" "sites/$domain/"
-            echo "✅ Database copied for $domain"
           done
       
-      - name: Generate main index page
+      - name: Migrate and validate databases
+        run: |
+          python3 << 'PYTHON'
+          import sqlite3
+          from pathlib import Path
+          
+          sites_dir = Path('sites')
+          
+          for site_dir in sites_dir.iterdir():
+              if not site_dir.is_dir():
+                  continue
+              
+              db_files = list(site_dir.glob('*.db'))
+              if not db_files:
+                  continue
+              
+              db_file = db_files[0]
+              domain = site_dir.name
+              
+              try:
+                  conn = sqlite3.connect(str(db_file))
+                  cursor = conn.cursor()
+                  
+                  # Check if title column exists
+                  cursor.execute("PRAGMA table_info(pages)")
+                  columns = [col[1] for col in cursor.fetchall()]
+                  
+                  if 'title' not in columns:
+                      print(f"⚠️  Adding missing 'title' column to {domain}")
+                      cursor.execute("ALTER TABLE pages ADD COLUMN title TEXT")
+                      conn.commit()
+                  
+                  # Verify
+                  cursor.execute("SELECT COUNT(*) FROM pages")
+                  count = cursor.fetchone()[0]
+                  print(f"✅ {domain}: {count} pages (schema OK)")
+                  
+                  conn.close()
+              except Exception as e:
+                  print(f"❌ {domain}: {e}")
+          PYTHON
+      
+      - name: Generate indexes
         run: |
           python3 << 'PYTHON'
           import sqlite3
@@ -124,14 +132,14 @@ jobs:
           
           sites_dir = Path('sites')
           
-          # Main index
+          # Main index HTML
           main_html = """
           <!DOCTYPE html>
           <html lang="en">
           <head>
               <meta charset="UTF-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>🕷️ Crawled Sites Archive</title>
+              <title>🕷️ Crawled Sites</title>
               <style>
                   * { margin: 0; padding: 0; box-sizing: border-box; }
                   body {
@@ -140,10 +148,7 @@ jobs:
                       min-height: 100vh;
                       padding: 40px 20px;
                   }
-                  .container {
-                      max-width: 1200px;
-                      margin: 0 auto;
-                  }
+                  .container { max-width: 1200px; margin: 0 auto; }
                   h1 {
                       color: white;
                       text-align: center;
@@ -161,27 +166,14 @@ jobs:
                       border-radius: 12px;
                       padding: 24px;
                       box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-                      transition: transform 0.3s, box-shadow 0.3s;
                   }
                   .card:hover {
                       transform: translateY(-5px);
                       box-shadow: 0 15px 40px rgba(0,0,0,0.3);
                   }
-                  .card h2 {
-                      color: #333;
-                      margin-bottom: 10px;
-                      font-size: 1.3em;
-                  }
-                  .stats {
-                      color: #666;
-                      font-size: 0.9em;
-                      margin: 10px 0;
-                  }
-                  .stat-item {
-                      padding: 5px 0;
-                      display: flex;
-                      justify-content: space-between;
-                  }
+                  .card h2 { color: #333; margin-bottom: 15px; }
+                  .stats { color: #666; font-size: 0.9em; }
+                  .stat-item { padding: 5px 0; display: flex; justify-content: space-between; }
                   .btn {
                       display: inline-block;
                       background: #667eea;
@@ -190,16 +182,9 @@ jobs:
                       border-radius: 6px;
                       text-decoration: none;
                       margin-top: 15px;
-                      transition: background 0.3s;
                   }
-                  .btn:hover {
-                      background: #764ba2;
-                  }
-                  .meta {
-                      color: #999;
-                      font-size: 0.8em;
-                      margin-top: 10px;
-                  }
+                  .btn:hover { background: #764ba2; }
+                  .meta { color: #999; font-size: 0.8em; margin-top: 10px; }
               </style>
           </head>
           <body>
@@ -208,7 +193,6 @@ jobs:
                   <div class="grid">
           """
           
-          # Find all site directories
           for site_dir in sorted(sites_dir.iterdir()):
               if not site_dir.is_dir():
                   continue
@@ -224,22 +208,12 @@ jobs:
                   conn = sqlite3.connect(str(db_file))
                   cursor = conn.cursor()
                   
-                  # Get page count
                   cursor.execute("SELECT COUNT(*) FROM pages")
                   page_count = cursor.fetchone()[0]
                   
-                  # Get first page URL
-                  cursor.execute("SELECT url FROM pages LIMIT 1")
-                  first_url = cursor.fetchone()
-                  first_url = first_url[0] if first_url else 'N/A'
-                  
-                  # Get DB size
                   db_size_mb = db_file.stat().st_size / 1024 / 1024
-                  
-                  conn.close()
-                  
-                  # Create card
                   domain_display = domain.replace('_', '.')
+                  
                   main_html += f"""
                       <div class="card">
                           <h2>🌐 {escape(domain_display)}</h2>
@@ -254,11 +228,13 @@ jobs:
                               </div>
                           </div>
                           <a href="./{domain}/index.html" class="btn">📖 View Pages</a>
-                          <div class="meta">Updated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}</div>
+                          <div class="meta">{datetime.now().strftime('%Y-%m-%d %H:%M UTC')}</div>
                       </div>
                   """
+                  
+                  conn.close()
               except Exception as e:
-                  print(f"❌ Error processing {domain}: {e}")
+                  print(f"❌ {domain}: {e}")
           
           main_html += """
                   </div>
@@ -273,7 +249,7 @@ jobs:
           print("✅ Main index generated")
           PYTHON
       
-      - name: Generate site indexes
+      - name: Generate site pages
         run: |
           python3 << 'PYTHON'
           import sqlite3
@@ -297,65 +273,29 @@ jobs:
                   conn = sqlite3.connect(str(db_file))
                   cursor = conn.cursor()
                   
-                  # Use correct columns from crawler DB
+                  # Use COALESCE for missing title
                   cursor.execute("SELECT url, COALESCE(title, url) FROM pages ORDER BY url LIMIT 100")
                   pages = cursor.fetchall()
                   
-                  # Create site directory
                   site_path = site_dir / 'pages'
                   site_path.mkdir(exist_ok=True)
                   
-                  # Create index for this site
                   site_index = f"""
                   <!DOCTYPE html>
                   <html lang="en">
                   <head>
                       <meta charset="UTF-8">
                       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                      <title>{escape(domain)} - Pages</title>
+                      <title>{escape(domain)}</title>
                       <style>
-                          * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                          body {{
-                              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-                              background: #f5f5f5;
-                              padding: 20px;
-                          }}
-                          .container {{
-                              max-width: 1000px;
-                              margin: 0 auto;
-                          }}
-                          h1 {{
-                              color: #333;
-                              margin-bottom: 30px;
-                          }}
-                          .page-list {{
-                              list-style: none;
-                          }}
-                          .page-item {{
-                              background: white;
-                              padding: 15px;
-                              margin-bottom: 10px;
-                              border-radius: 6px;
-                              border-left: 4px solid #667eea;
-                          }}
-                          .page-item:hover {{
-                              box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-                          }}
-                          .page-url {{
-                              color: #667eea;
-                              text-decoration: none;
-                              font-weight: 500;
-                          }}
-                          .page-url:hover {{
-                              text-decoration: underline;
-                          }}
-                          .back {{
-                              margin-top: 20px;
-                          }}
-                          .back a {{
-                              color: #667eea;
-                              text-decoration: none;
-                          }}
+                          * {{ margin: 0; padding: 0; }}
+                          body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f5f5; padding: 20px; }}
+                          .container {{ max-width: 1000px; margin: 0 auto; }}
+                          h1 {{ color: #333; margin-bottom: 30px; }}
+                          .page-list {{ list-style: none; }}
+                          .page-item {{ background: white; padding: 15px; margin-bottom: 10px; border-radius: 6px; border-left: 4px solid #667eea; }}
+                          a {{ color: #667eea; text-decoration: none; }}
+                          a:hover {{ text-decoration: underline; }}
                       </style>
                   </head>
                   <body>
@@ -366,14 +306,8 @@ jobs:
                   
                   for page_num, (url, title) in enumerate(pages, 1):
                       safe_url = f"page-{page_num}.html"
+                      site_index += f'<li class="page-item"><a href="{safe_url}">🔗 {escape(url[:70])}</a></li>'
                       
-                      site_index += f"""
-                          <li class="page-item">
-                              <a href="{safe_url}" class="page-url">🔗 {escape(url[:70])}</a>
-                          </li>
-                      """
-                      
-                      # Create individual page file
                       page_html = f"""
                       <!DOCTYPE html>
                       <html lang="en">
@@ -382,19 +316,18 @@ jobs:
                           <meta name="viewport" content="width=device-width, initial-scale=1.0">
                           <title>{escape(title[:60])}</title>
                           <style>
-                              body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; background: #f5f5f5; }}
+                              body {{ font-family: sans-serif; padding: 20px; background: #f5f5f5; }}
                               .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 20px; border-radius: 6px; }}
                               h1 {{ color: #333; }}
                               .meta {{ color: #999; font-size: 0.85em; margin: 10px 0; }}
                               a {{ color: #667eea; }}
-                              .back {{ margin-top: 30px; }}
                           </style>
                       </head>
                       <body>
                           <div class="container">
                               <h1>{escape(title[:100])}</h1>
                               <div class="meta">🔗 {escape(url)}</div>
-                              <div class="back">
+                              <div style="margin-top: 30px;">
                                   <a href="index.html">← Back to list</a>
                               </div>
                           </div>
@@ -405,68 +338,43 @@ jobs:
                       with open(site_path / safe_url, 'w') as f:
                           f.write(page_html)
                   
-                  site_index += """
-                          </ul>
-                      </div>
-                  </body>
-                  </html>
-                  """
-                  
+                  site_index += "</ul></div></body></html>"
                   with open(site_dir / 'index.html', 'w') as f:
                       f.write(site_index)
                   
                   conn.close()
-                  print(f"✅ {domain}: {len(pages)} pages indexed")
+                  print(f"✅ {domain}: {len(pages)} pages")
               except Exception as e:
                   print(f"❌ {domain}: {e}")
           PYTHON
       
-      - name: Create .gitignore for large files
+      - name: Create .gitignore
         run: |
           cat > .gitignore << 'EOF'
-          # Ignore large database files
           *.db
           artifacts-temp/
           artifacts/
-          
-          # Keep HTML files
           !sites/*/index.html
           !sites/*/pages/*.html
           !index.html
           EOF
-          
           git add .gitignore
-          echo "✅ .gitignore created"
       
-      - name: Commit changes
+      - name: Commit and push
         run: |
           git config user.name "🤖 Deploy Bot"
           git config user.email "action@github.com"
-          
-          git add index.html sites/*/index.html sites/*/pages/*.html
-          git commit -m "🌐 Deploy: $(date +'%Y-%m-%d %H:%M UTC')" || echo "No changes"
-          git push origin main
+          git add index.html sites/*/index.html sites/*/pages/*.html 2>/dev/null || true
+          git commit -m "🌐 Deploy $(date +'%Y-%m-%d %H:%M UTC')" || echo "No changes"
+          git push origin main 2>/dev/null || true
       
       - name: Setup Pages
         uses: actions/configure-pages@v4
       
-      - name: Upload to GitHub Pages
+      - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: '.'
       
-      - name: Deploy to GitHub Pages
-        id: deployment
+      - name: Deploy to Pages
         uses: actions/deploy-pages@v4
-      
-      - name: Summary
-        run: |
-          echo "============================================================"
-          echo "🌐 DEPLOYMENT COMPLETED"
-          echo "============================================================"
-          echo ""
-          echo "📄 Live at:"
-          echo "   ${{ steps.deployment.outputs.page_url }}"
-          echo ""
-          echo "✅ All crawled sites deployed!"
-          echo "============================================================"

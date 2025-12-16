@@ -364,7 +364,7 @@ jobs:
         with:
           name: sites-build
           path: sites/
-          retention-days: 1
+          retention-days: 30
 
   # ============================================================
   # JOB 3: DEPLOY - Upload to GitHub Pages

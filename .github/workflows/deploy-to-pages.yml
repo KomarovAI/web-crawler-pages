@@ -8,7 +8,7 @@ on:
         required: true
         default: 'KomarovAI/web-crawler'
       run_id:
-        description: 'Workflow run ID from web-crawler (look at Actions tab)'
+        description: 'Workflow run ID from web-crawler Actions tab - URL format: https://github.com/KomarovAI/web-crawler/actions/runs/[RUN_ID] (use the number after /runs/, NOT the job ID)'
         required: true
       site_domain:
         description: 'Domain folder name (e.g., callmedley-com)'

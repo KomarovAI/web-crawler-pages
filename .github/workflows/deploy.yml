@@ -4,18 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       artifact_name:
-        description: 'Имя артефакта (archive-HASH)'
+        description: 'Artifact name from web-crawler'
         required: true
         type: string
+        default: 'archive-a370f4484bdb1bff56f115d24914942a47de60c601b762df5cbb4170301695a2'
       run_id:
-        description: 'ID запуска из web-crawler репозитория'
+        description: 'Run ID from web-crawler'
         required: true
         type: string
-      domain:
-        description: 'Домен сайта (например callmedley.com)'
-        required: true
-        type: string
-        default: 'callmedley.com'
+        default: '20290432867'
 
 jobs:
   deploy:
@@ -28,7 +25,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
+      
       - name: Download Archive
         uses: actions/download-artifact@v4
         with:
@@ -37,182 +34,65 @@ jobs:
           repository: KomarovAI/web-crawler
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Archives
+      
+      - name: Extract and Deploy
         run: |
-          echo "🔓 Распаковка архивов..."
-          find artifacts -name "*.zip" -type f 2>/dev/null | while read zip; do
-            dir=$(dirname "$zip")
-            echo "📦 Извлекаю: $zip"
-            unzip -q -o "$zip" -d "$dir" || true
-            rm "$zip"
-          done
-          echo "✅ Распаковка завершена"
+          echo "Extracting archives..."
+          cd artifacts
+          find . -name '*.zip' -exec unzip -q {} \;
           
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Process Archive & Rewrite Links
-        env:
-          ARTIFACT_NAME: ${{ inputs.artifact_name }}
-          DOMAIN: ${{ inputs.domain }}
+          echo "Finding archive directory..."
+          ARCHIVE_DIR=$(find . -type d -name "archive" | head -1)
+          if [ -z "$ARCHIVE_DIR" ]; then
+            ARCHIVE_DIR=$(find . -type d -name "callmedley*" | head -1)
+          fi
+          
+          echo "Archive dir: $ARCHIVE_DIR"
+          
+          if [ ! -z "$ARCHIVE_DIR" ]; then
+            echo "Copying site to pages..."
+            mkdir -p ../pages
+            cp -r "$ARCHIVE_DIR"/* ../pages/ || true
+            cp -r "$ARCHIVE_DIR"/pages/* ../pages/ 2>/dev/null || true
+          else
+            echo "Looking for HTML files..."
+            find . -name "*.html" | head -20
+            ls -la
+          fi
+      
+      - name: Create Index if Missing
         run: |
-          cat > process_archive.py << 'EOFPYTHON'
-import sqlite3
-import os
-import re
-from pathlib import Path
-from urllib.parse import urlparse, unquote
-
-def process_archive():
-    artifact_name = os.environ['ARTIFACT_NAME']
-    domain = os.environ['DOMAIN']
-    domain_clean = domain.replace('.', '')
-    
-    # Динамический путь к архиву
-    archive_base = Path("artifacts") / artifact_name / "archive" / domain
-    db_path = archive_base / (domain_clean + ".db")
-    
-    if not db_path.exists():
-        print("❌ База данных не найдена: " + str(db_path))
-        print("📂 Содержимое artifacts/:")
-        for p in Path("artifacts").rglob("*"):
-            print("  " + str(p))
-        return
-    
-    output_dir = Path("pages")
-    output_dir.mkdir(exist_ok=True)
-    
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT url, html FROM pages ORDER BY id")
-    pages = cursor.fetchall()
-    print("📦 Найдено " + str(len(pages)) + " страниц")
-    
-    url_mapping = {}
-    for url, _ in pages:
-        parsed = urlparse(url)
-        path = parsed.path.strip('/')
-        local_path = "index.html" if not path else path + "/index.html"
-        url_mapping[url] = local_path
-        url_mapping["https://" + domain + "/" + path] = local_path
-        url_mapping["https://" + domain + "/" + path + "/"] = local_path
-    
-    print("🗺️ Маппинг создан для " + str(len(url_mapping)) + " URL")
-    
-    processed = 0
-    for url, html in pages:
-        if not html:
-            continue
-        local_path = url_mapping.get(url)
-        if not local_path:
-            continue
-        
-        modified_html = rewrite_links(html, url, url_mapping, domain)
-        output_file = output_dir / local_path
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text(modified_html, encoding='utf-8')
-        
-        processed += 1
-        if processed % 50 == 0:
-            print("✅ " + str(processed) + "/" + str(len(pages)) + "...")
-    
-    conn.close()
-    print("🎉 Обработано " + str(processed) + " страниц")
-    create_index(pages, output_dir, domain)
-
-def rewrite_links(html, current_url, url_mapping, domain):
-    parsed_current = urlparse(current_url)
-    current_depth = len([p for p in parsed_current.path.strip('/').split('/') if p])
-    
-    # Экранируем точки в домене для regex
-    domain_escaped = domain.replace('.', '\\.')
-    
-    patterns = [
-        (r'href="https?://' + domain_escaped + r'(/[^"]*)"', 'href', '"'),
-        (r"href='https?://" + domain_escaped + r"(/[^']*)'", 'href', "'"),
-        (r'src="https?://' + domain_escaped + r'(/[^"]*)"', 'src', '"'),
-        (r"src='https?://" + domain_escaped + r"(/[^']*)'", 'src', "'"),
-    ]
-    
-    modified_html = html
-    for pattern, attr, quote in patterns:
-        def replacer(m):
-            path = m.group(1).strip('/')
-            if not path or path.startswith('#'):
-                return m.group(0)
-            
-            target = "https://" + domain + "/" + path
-            local = url_mapping.get(target) or url_mapping.get(target + "/")
-            
-            if local:
-                prefix = '../' * current_depth if current_depth > 0 else ''
-                return attr + '=' + quote + prefix + local + quote
-            return m.group(0)
-        
-        modified_html = re.sub(pattern, replacer, modified_html)
-    
-    return modified_html
-
-def create_index(pages, output_dir, domain):
-    html_start = '''<!DOCTYPE html>
+          if [ ! -f pages/index.html ]; then
+            echo "Creating index.html"
+            mkdir -p pages
+            cat > pages/index.html << 'EOF'
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DOMAIN_PLACEHOLDER Archive</title>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: system-ui; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
-.container { max-width: 1200px; margin: 0 auto; }
-h1 { color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
-.card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s; }
-.card:hover { transform: translateY(-4px); }
-.url { font-size: 0.85em; color: #666; margin: 8px 0 12px; word-break: break-all; }
-.btn { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Archive</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { color: white; text-align: center; margin-bottom: 40px; }
+  </style>
 </head>
 <body>
-<div class="container">
-<h1>📖 DOMAIN_PLACEHOLDER Archive (COUNT_PLACEHOLDER pages)</h1>
-<div class="grid">
-'''
-    
-    html_start = html_start.replace('DOMAIN_PLACEHOLDER', domain)
-    html_start = html_start.replace('COUNT_PLACEHOLDER', str(len(pages)))
-    
-    cards = []
-    for i, (url, _) in enumerate(pages, 1):
-        path = urlparse(url).path.strip('/')
-        local = (path + "/index.html") if path else "index.html"
-        card = '<div class="card"><h3>Page ' + str(i) + '</h3><div class="url">' + url + '</div><a href="' + local + '" class="btn">View →</a></div>'
-        cards.append(card)
-    
-    html_end = '''
-</div>
-</div>
+  <div class="container">
+    <h1>Archive Deployed</h1>
+  </div>
 </body>
 </html>
-'''
-    
-    final = html_start + '\n'.join(cards) + html_end
-    (output_dir / "archive-index.html").write_text(final, encoding='utf-8')
-    print("📋 Создан archive-index.html")
-
-if __name__ == "__main__":
-    process_archive()
-EOFPYTHON
-          
-          python3 process_archive.py
-
+EOF
+          fi
+      
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: pages
-
+      
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

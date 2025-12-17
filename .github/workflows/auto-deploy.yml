@@ -1,0 +1,27 @@
+name: Auto Deploy Archive
+
+on:
+  push:
+    paths:
+      - 'RUN_DEPLOYMENT.sh'
+      - '.github/workflows/auto-deploy.yml'
+
+jobs:
+  trigger-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Deploy Workflow
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: 'KomarovAI',
+              repo: 'web-crawler-pages',
+              workflow_id: 'deploy.yml',
+              ref: 'main',
+              inputs: {
+                'artifact_name': 'archive-a370f4484bdb1bff56f115d24914942a47de60c601b762df5cbb4170301695a2',
+                'run_id': '20290432867'
+              }
+            });
+            console.log('✅ Deploy workflow triggered!')

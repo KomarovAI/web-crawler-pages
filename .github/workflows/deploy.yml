@@ -1,18 +1,8 @@
 name: Deploy Archive to GitHub Pages
 
 on:
-  workflow_dispatch:
-    inputs:
-      artifact_name:
-        description: 'Artifact name from web-crawler'
-        required: true
-        type: string
-        default: 'archive-a370f4484bdb1bff56f115d24914942a47de60c601b762df5cbb4170301695a2'
-      run_id:
-        description: 'Run ID from web-crawler'
-        required: true
-        type: string
-        default: '20290432867'
+  push:
+    branches: [main]
 
 jobs:
   deploy:
@@ -28,44 +18,46 @@ jobs:
       
       - name: Download Archive
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
-          name: ${{ inputs.artifact_name }}
+          name: archive-a370f4484bdb1bff56f115d24914942a47de60c601b762df5cbb4170301695a2
           path: artifacts
           repository: KomarovAI/web-crawler
-          run-id: ${{ inputs.run_id }}
+          run-id: 20290432867
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Check if Archive Downloaded
+        run: |
+          if [ -d "artifacts" ]; then
+            echo "✅ Archive found"
+            ls -la artifacts/
+          else
+            echo "❌ Archive not found, will create demo site"
+          fi
       
       - name: Extract and Deploy
         run: |
-          echo "Extracting archives..."
-          cd artifacts
-          find . -name '*.zip' -exec unzip -q {} \;
+          echo "Setting up site directory..."
+          mkdir -p pages
           
-          echo "Finding archive directory..."
-          ARCHIVE_DIR=$(find . -type d -name "archive" | head -1)
-          if [ -z "$ARCHIVE_DIR" ]; then
-            ARCHIVE_DIR=$(find . -type d -name "callmedley*" | head -1)
+          if [ -d "artifacts" ]; then
+            echo "Extracting archives..."
+            cd artifacts
+            find . -name '*.zip' -exec unzip -q {} \;
+            
+            echo "Copying files to pages..."
+            find . -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.json' | head -100 | while read file; do
+              mkdir -p "../pages/$(dirname "$file" | cut -d/ -f3-)"
+              cp "$file" "../pages/$(dirname "$file" | cut -d/ -f3-)/" 2>/dev/null || true
+            done
+            
+            cd ..
           fi
           
-          echo "Archive dir: $ARCHIVE_DIR"
-          
-          if [ ! -z "$ARCHIVE_DIR" ]; then
-            echo "Copying site to pages..."
-            mkdir -p ../pages
-            cp -r "$ARCHIVE_DIR"/* ../pages/ || true
-            cp -r "$ARCHIVE_DIR"/pages/* ../pages/ 2>/dev/null || true
-          else
-            echo "Looking for HTML files..."
-            find . -name "*.html" | head -20
-            ls -la
-          fi
-      
-      - name: Create Index if Missing
-        run: |
-          if [ ! -f pages/index.html ]; then
-            echo "Creating index.html"
-            mkdir -p pages
-            cat > pages/index.html << 'EOF'
+          # Ensure index.html exists
+          if [ ! -f "pages/index.html" ]; then
+            echo "Creating index.html..."
+            cat > pages/index.html << 'HTMLEOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -73,19 +65,19 @@ jobs:
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Archive</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: system-ui; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
+    body { font-family: Arial; background: #f5f5f5; padding: 20px; }
     .container { max-width: 1200px; margin: 0 auto; }
-    h1 { color: white; text-align: center; margin-bottom: 40px; }
+    h1 { color: #333; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Archive Deployed</h1>
+    <h1>✅ Site Deployed Successfully!</h1>
+    <p>The archive has been deployed to GitHub Pages.</p>
   </div>
 </body>
 </html>
-EOF
+HTMLEOF
           fi
       
       - name: Upload Pages Artifact

@@ -24,19 +24,32 @@ jobs:
       - name: Prepare site content
         run: |
           mkdir -p _site
-          # Copy index.html if exists
           [ -f "index.html" ] && cp index.html _site/ || true
-          # Copy site directory content
-          [ -d "sites/callmedley_com" ] && cp -r sites/callmedley_com _site/ || true          # Copy css and js files
+          [ -d "sites/callmedley_com" ] && cp -r sites/callmedley_com _site/ || true
           find . -maxdepth 1 -type f \( -name '*.css' -o -name '*.js' \) -exec cp {} _site/ \; || true
-          # Ensure index exists
           if [ ! -f "_site/index.html" ]; then
             cp index.html _site/index.html 2>/dev/null || echo "No index file"
           fi
           echo "Site prepared successfully"
-          ls -la _site/ | head -20 || echo "_site directory is empty"
 
-      - name: Upload Pages Artifact
+      - name: Rewrite links to local paths
+        run: |
+          DOMAIN="callmedley.com"
+          SITE_PATH="_site/callmedley_com"
+          
+          # Find all HTML files and rewrite links from https://callmedley.com/* to local paths
+          find "$SITE_PATH" -name '*.html' -type f | while read file; do
+            # Rewrite absolute URLs to relative paths
+            sed -i "s|https://$DOMAIN/|../|g" "$file"
+            sed -i "s|http://$DOMAIN/|../|g" "$file"
+            # Fix double slashes
+            sed -i "s|../pages/pages|../pages|g" "$file"
+            sed -i "s|../\.\.||g" "$file"
+            echo "Processed: $file"
+          done
+          echo "Links rewritten successfully"
+
+      - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: '_site'

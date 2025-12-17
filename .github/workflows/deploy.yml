@@ -42,132 +42,134 @@ jobs:
 
       - name: Process Archive & Rewrite Links
         run: |
-          python3 << 'EOFPYTHON'
-import sqlite3
-import os
-import re
-from pathlib import Path
-from urllib.parse import urlparse, unquote
+          cat > process_archive.py << 'EOFPYTHON'
+          import sqlite3
+          import os
+          import re
+          from pathlib import Path
+          from urllib.parse import urlparse, unquote
 
-def process_archive():
-    archive_dir = Path("artifacts/archive-a370f4484bdb1bff56f115d24914942a47de60c601b762df5cbb4170301695a2/archive/callmedley.com")
-    db_path = archive_dir / "callmedleycom.db"
-    output_dir = Path("pages")
-    output_dir.mkdir(exist_ok=True)
-    
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT url, html FROM pages ORDER BY id")
-    pages = cursor.fetchall()
-    print(f"📦 Найдено {len(pages)} страниц")
-    
-    url_mapping = {}
-    for url, _ in pages:
-        parsed = urlparse(url)
-        path = parsed.path.strip('/')
-        local_path = "index.html" if not path else f"{path}/index.html"
-        url_mapping[url] = local_path
-        url_mapping[f"https://callmedley.com/{path}"] = local_path
-        url_mapping[f"https://callmedley.com/{path}/"] = local_path
-    
-    print(f"🗺️ Маппинг создан для {len(url_mapping)} URL")
-    
-    processed = 0
-    for url, html in pages:
-        if not html:
-            continue
-        local_path = url_mapping.get(url)
-        if not local_path:
-            continue
-        
-        modified_html = rewrite_links(html, url, url_mapping)
-        output_file = output_dir / local_path
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text(modified_html, encoding='utf-8')
-        
-        processed += 1
-        if processed % 50 == 0:
-            print(f"✅ {processed}/{len(pages)}...")
-    
-    conn.close()
-    print(f"🎉 Обработано {processed} страниц")
-    create_index(pages, output_dir)
+          def process_archive():
+              archive_dir = Path("artifacts/archive-a370f4484bdb1bff56f115d24914942a47de60c601b762df5cbb4170301695a2/archive/callmedley.com")
+              db_path = archive_dir / "callmedleycom.db"
+              output_dir = Path("pages")
+              output_dir.mkdir(exist_ok=True)
+              
+              conn = sqlite3.connect(db_path)
+              cursor = conn.cursor()
+              cursor.execute("SELECT url, html FROM pages ORDER BY id")
+              pages = cursor.fetchall()
+              print(f"📦 Найдено {len(pages)} страниц")
+              
+              url_mapping = {}
+              for url, _ in pages:
+                  parsed = urlparse(url)
+                  path = parsed.path.strip('/')
+                  local_path = "index.html" if not path else f"{path}/index.html"
+                  url_mapping[url] = local_path
+                  url_mapping[f"https://callmedley.com/{path}"] = local_path
+                  url_mapping[f"https://callmedley.com/{path}/"] = local_path
+              
+              print(f"🗺️ Маппинг создан для {len(url_mapping)} URL")
+              
+              processed = 0
+              for url, html in pages:
+                  if not html:
+                      continue
+                  local_path = url_mapping.get(url)
+                  if not local_path:
+                      continue
+                  
+                  modified_html = rewrite_links(html, url, url_mapping)
+                  output_file = output_dir / local_path
+                  output_file.parent.mkdir(parents=True, exist_ok=True)
+                  output_file.write_text(modified_html, encoding='utf-8')
+                  
+                  processed += 1
+                  if processed % 50 == 0:
+                      print(f"✅ {processed}/{len(pages)}...")
+              
+              conn.close()
+              print(f"🎉 Обработано {processed} страниц")
+              create_index(pages, output_dir)
 
-def rewrite_links(html, current_url, url_mapping):
-    parsed_current = urlparse(current_url)
-    current_depth = len([p for p in parsed_current.path.strip('/').split('/') if p])
-    
-    patterns = [
-        (r'href="https?://callmedley\\.com(/[^"]*)"', 'href', '"'),
-        (r"href='https?://callmedley\\.com(/[^']*)'" , 'href', "'"),
-        (r'src="https?://callmedley\\.com(/[^"]*)"', 'src', '"'),
-        (r"src='https?://callmedley\\.com(/[^']*)'" , 'src', "'"),
-    ]
-    
-    modified_html = html
-    for pattern, attr, quote in patterns:
-        def replacer(m):
-            path = m.group(1).strip('/')
-            if not path or path.startswith('#'):
-                return m.group(0)
-            
-            target = f"https://callmedley.com/{path}"
-            local = url_mapping.get(target) or url_mapping.get(f"{target}/")
-            
-            if local:
-                prefix = '../' * current_depth if current_depth > 0 else ''
-                return f'{attr}={quote}{prefix}{local}{quote}'
-            return m.group(0)
-        
-        modified_html = re.sub(pattern, replacer, modified_html)
-    
-    return modified_html
+          def rewrite_links(html, current_url, url_mapping):
+              parsed_current = urlparse(current_url)
+              current_depth = len([p for p in parsed_current.path.strip('/').split('/') if p])
+              
+              patterns = [
+                  (r'href="https?://callmedley\\.com(/[^"]*)"', 'href', '"'),
+                  (r"href='https?://callmedley\\.com(/[^']*)'" , 'href', "'"),
+                  (r'src="https?://callmedley\\.com(/[^"]*)"', 'src', '"'),
+                  (r"src='https?://callmedley\\.com(/[^']*)'" , 'src', "'"),
+              ]
+              
+              modified_html = html
+              for pattern, attr, quote in patterns:
+                  def replacer(m):
+                      path = m.group(1).strip('/')
+                      if not path or path.startswith('#'):
+                          return m.group(0)
+                      
+                      target = f"https://callmedley.com/{path}"
+                      local = url_mapping.get(target) or url_mapping.get(f"{target}/")
+                      
+                      if local:
+                          prefix = '../' * current_depth if current_depth > 0 else ''
+                          return f'{attr}={quote}{prefix}{local}{quote}'
+                      return m.group(0)
+                  
+                  modified_html = re.sub(pattern, replacer, modified_html)
+              
+              return modified_html
 
-def create_index(pages, output_dir):
-    html_start = '''<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Callmedley Archive</title>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: system-ui; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
-.container { max-width: 1200px; margin: 0 auto; }
-h1 { color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
-.card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s; }
-.card:hover { transform: translateY(-4px); }
-.url { font-size: 0.85em; color: #666; margin: 8px 0 12px; word-break: break-all; }
-.btn { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; }
-</style>
-</head>
-<body>
-<div class="container">
-<h1>📖 Callmedley Archive ({count} pages)</h1>
-<div class="grid">
-'''
-    
-    cards = []
-    for i, (url, _) in enumerate(pages, 1):
-        path = urlparse(url).path.strip('/')
-        local = f"{path}/index.html" if path else "index.html"
-        cards.append(f'<div class="card"><h3>Page {i}</h3><div class="url">{url}</div><a href="{local}" class="btn">View →</a></div>')
-    
-    html_end = '''
-</div>
-</div>
-</body>
-</html>
-'''
-    
-    final = html_start.replace('{count}', str(len(pages))) + '\n'.join(cards) + html_end
-    (output_dir / "archive-index.html").write_text(final, encoding='utf-8')
-    print("📋 Создан archive-index.html")
+          def create_index(pages, output_dir):
+              html_start = '''<!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Callmedley Archive</title>
+          <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: system-ui; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
+          .container { max-width: 1200px; margin: 0 auto; }
+          h1 { color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }
+          .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+          .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s; }
+          .card:hover { transform: translateY(-4px); }
+          .url { font-size: 0.85em; color: #666; margin: 8px 0 12px; word-break: break-all; }
+          .btn { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; }
+          </style>
+          </head>
+          <body>
+          <div class="container">
+          <h1>📖 Callmedley Archive ({count} pages)</h1>
+          <div class="grid">
+          '''
+              
+              cards = []
+              for i, (url, _) in enumerate(pages, 1):
+                  path = urlparse(url).path.strip('/')
+                  local = f"{path}/index.html" if path else "index.html"
+                  cards.append(f'<div class="card"><h3>Page {i}</h3><div class="url">{url}</div><a href="{local}" class="btn">View →</a></div>')
+              
+              html_end = '''
+          </div>
+          </div>
+          </body>
+          </html>
+          '''
+              
+              final = html_start.replace('{count}', str(len(pages))) + '\n'.join(cards) + html_end
+              (output_dir / "archive-index.html").write_text(final, encoding='utf-8')
+              print("📋 Создан archive-index.html")
 
-if __name__ == "__main__":
-    process_archive()
-EOFPYTHON
+          if __name__ == "__main__":
+              process_archive()
+          EOFPYTHON
+          
+          python3 process_archive.py
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3

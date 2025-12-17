@@ -42,8 +42,7 @@ jobs:
 
       - name: Process Archive & Rewrite Links
         run: |
-          cat > process_archive.py << 'EOFPYTHON'
-#!/usr/bin/env python3
+          python3 << 'EOFPYTHON'
 import sqlite3
 import os
 import re
@@ -51,226 +50,124 @@ from pathlib import Path
 from urllib.parse import urlparse, unquote
 
 def process_archive():
-    """Извлекает HTML из БД и переписывает все ссылки на локальные"""
-    
-    # Пути
     archive_dir = Path("artifacts/archive-a370f4484bdb1bff56f115d24914942a47de60c601b762df5cbb4170301695a2/archive/callmedley.com")
     db_path = archive_dir / "callmedleycom.db"
     output_dir = Path("pages")
-    
-    # Создаём выходную директорию
     output_dir.mkdir(exist_ok=True)
     
-    # Подключаемся к БД
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    # Получаем все страницы
     cursor.execute("SELECT url, html FROM pages ORDER BY id")
     pages = cursor.fetchall()
+    print(f"📦 Найдено {len(pages)} страниц")
     
-    print(f"📦 Найдено {len(pages)} страниц в базе данных")
-    
-    # Создаём маппинг URL -> локальный путь
     url_mapping = {}
     for url, _ in pages:
         parsed = urlparse(url)
         path = parsed.path.strip('/')
-        
-        if not path:
-            local_path = "index.html"
-        else:
-            local_path = f"{path}/index.html"
-        
+        local_path = "index.html" if not path else f"{path}/index.html"
         url_mapping[url] = local_path
         url_mapping[f"https://callmedley.com/{path}"] = local_path
         url_mapping[f"https://callmedley.com/{path}/"] = local_path
     
-    print(f"🗺️  Создан маппинг для {len(url_mapping)} URL")
+    print(f"🗺️ Маппинг создан для {len(url_mapping)} URL")
     
-    # Обрабатываем каждую страницу
     processed = 0
     for url, html in pages:
         if not html:
             continue
-            
         local_path = url_mapping.get(url)
         if not local_path:
             continue
         
-        # Переписываем ссылки в HTML
         modified_html = rewrite_links(html, url, url_mapping)
-        
-        # Сохраняем файл
         output_file = output_dir / local_path
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text(modified_html, encoding='utf-8')
         
         processed += 1
         if processed % 50 == 0:
-            print(f"✅ Обработано {processed}/{len(pages)} страниц...")
+            print(f"✅ {processed}/{len(pages)}...")
     
     conn.close()
-    
-    print(f"\n🎉 Готово! Обработано {processed} страниц")
-    print(f"📂 Все файлы сохранены в: {output_dir.absolute()}")
-    
-    # Создаём простой index.html со списком
+    print(f"🎉 Обработано {processed} страниц")
     create_index(pages, output_dir)
 
 def rewrite_links(html, current_url, url_mapping):
-    """Переписывает все ссылки с callmedley.com на локальные пути"""
-    
     parsed_current = urlparse(current_url)
     current_depth = len([p for p in parsed_current.path.strip('/').split('/') if p])
     
     patterns = [
-        (r'href=["\']https?://callmedley\.com(/[^"\']*)["\']', 'href'),
-        (r'src=["\']https?://callmedley\.com(/[^"\']*)["\']', 'src'),
-        (r'url\(["\']?https?://callmedley\.com(/[^"\'\)\s]*)["\']?\)', 'css'),
+        (r'href="https?://callmedley\\.com(/[^"]*)"', 'href', '"'),
+        (r"href='https?://callmedley\\.com(/[^']*)'" , 'href', "'"),
+        (r'src="https?://callmedley\\.com(/[^"]*)"', 'src', '"'),
+        (r"src='https?://callmedley\\.com(/[^']*)'" , 'src', "'"),
     ]
     
     modified_html = html
-    
-    for pattern, link_type in patterns:
-        def replace_link(match):
-            path = match.group(1).strip('/')
-            
+    for pattern, attr, quote in patterns:
+        def replacer(m):
+            path = m.group(1).strip('/')
             if not path or path.startswith('#'):
-                return match.group(0)
+                return m.group(0)
             
-            target_url = f"https://callmedley.com/{path}"
-            local_path = url_mapping.get(target_url)
+            target = f"https://callmedley.com/{path}"
+            local = url_mapping.get(target) or url_mapping.get(f"{target}/")
             
-            if not local_path:
-                target_url = f"https://callmedley.com/{path}/"
-                local_path = url_mapping.get(target_url)
-            
-            if local_path:
+            if local:
                 prefix = '../' * current_depth if current_depth > 0 else ''
-                relative_path = f"{prefix}{local_path}"
-                
-                if link_type == 'css':
-                    return f'url({relative_path})'
-                else:
-                    quote = match.group(0)[len(link_type)+1]
-                    return f'{link_type}={quote}{relative_path}{quote}'
-            
-            return match.group(0)
+                return f'{attr}={quote}{prefix}{local}{quote}'
+            return m.group(0)
         
-        modified_html = re.sub(pattern, replace_link, modified_html)
+        modified_html = re.sub(pattern, replacer, modified_html)
     
     return modified_html
 
 def create_index(pages, output_dir):
-    """Создаёт простой index.html со списком всех страниц"""
-    
-    index_html = """<!DOCTYPE html>
+    html_start = '''<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Callmedley.com Archive - {count} Pages</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 40px 20px;
-        }}
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        h1 {{ 
-            color: white; 
-            text-align: center; 
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }}
-        .subtitle {{
-            text-align: center;
-            color: rgba(255,255,255,0.9);
-            margin-bottom: 40px;
-            font-size: 1.2em;
-        }}
-        .grid {{ 
-            display: grid; 
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 20px;
-        }}
-        .card {{
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: transform 0.2s, box-shadow 0.2s;
-        }}
-        .card:hover {{
-            transform: translateY(-4px);
-            box-shadow: 0 8px 12px rgba(0,0,0,0.15);
-        }}
-        .card h3 {{
-            font-size: 1.1em;
-            margin-bottom: 8px;
-            color: #333;
-        }}
-        .url {{
-            font-size: 0.85em;
-            color: #666;
-            margin-bottom: 12px;
-            word-break: break-all;
-        }}
-        .btn {{
-            display: inline-block;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 8px 16px;
-            border-radius: 6px;
-            text-decoration: none;
-            font-size: 0.9em;
-            transition: opacity 0.2s;
-        }}
-        .btn:hover {{ opacity: 0.9; }}
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Callmedley Archive</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
+.container { max-width: 1200px; margin: 0 auto; }
+h1 { color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+.card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s; }
+.card:hover { transform: translateY(-4px); }
+.url { font-size: 0.85em; color: #666; margin: 8px 0 12px; word-break: break-all; }
+.btn { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; }
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>📖 Callmedley.com Archive</h1>
-        <p class="subtitle">Total pages: {count}</p>
-        <div class="grid">
-{cards}
-        </div>
-    </div>
-</body>
-</html>"""
+<div class="container">
+<h1>📖 Callmedley Archive ({count} pages)</h1>
+<div class="grid">
+'''
     
     cards = []
     for i, (url, _) in enumerate(pages, 1):
-        parsed = urlparse(url)
-        path = parsed.path.strip('/')
-        local_path = f"{path}/index.html" if path else "index.html"
-        
-        title = path.replace('/', ' › ') if path else 'Home'
-        
-        card = f"""            <div class="card">
-                <h3>Page {i}</h3>
-                <div class="url">{url}</div>
-                <a href="{local_path}" class="btn">View →</a>
-            </div>"""
-        cards.append(card)
+        path = urlparse(url).path.strip('/')
+        local = f"{path}/index.html" if path else "index.html"
+        cards.append(f'<div class="card"><h3>Page {i}</h3><div class="url">{url}</div><a href="{local}" class="btn">View →</a></div>')
     
-    final_html = index_html.format(
-        count=len(pages),
-        cards='\n'.join(cards)
-    )
+    html_end = '''
+</div>
+</div>
+</body>
+</html>
+'''
     
-    (output_dir / "archive-index.html").write_text(final_html, encoding='utf-8')
-    print(f"📋 Создан индексный файл: archive-index.html")
+    final = html_start.replace('{count}', str(len(pages))) + '\n'.join(cards) + html_end
+    (output_dir / "archive-index.html").write_text(final, encoding='utf-8')
+    print("📋 Создан archive-index.html")
 
 if __name__ == "__main__":
     process_archive()
 EOFPYTHON
-
-          python3 process_archive.py
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3

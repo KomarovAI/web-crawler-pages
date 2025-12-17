@@ -10,109 +10,86 @@ jobs:
       - name: Scrape callmedley.com
         run: |
           mkdir -p sites/callmedley_com/pages
-          
-          # Download the website using wget
           wget -r -l 3 -k -p --no-parent --timeout=10 -q \
             -P sites/callmedley_com/ \
             https://callmedley.com/ 2>&1 || echo "wget completed with exit code $?"
-          
-          # Find all HTML files and create a mapping
-          echo "Processing downloaded files..."
           find sites/callmedley_com -type f -name '*.html' | sort > /tmp/all_files.txt
-          
-          # Create a Python script to process the files
-          cat > /tmp/process_pages.py << 'EOF'
+          echo "Total files: $(wc -l < /tmp/all_files.txt)"
+      - name: Process pages
+        run: |
+          python3 << 'PYTHON_EOF'
 import os
 import shutil
 from pathlib import Path
 
-# Read all HTML files
 all_files = []
 with open('/tmp/all_files.txt', 'r') as f:
-    all_files = [line.strip() for line in f.readlines()]
+    all_files = [line.strip() for line in f.readlines() if line.strip()]
 
 if not all_files:
-    print("No HTML files found")
-    exit(1)
+    print("No files found")
+    exit(0)
 
-print(f"Found {len(all_files)} HTML files")
+print(f"Processing {len(all_files)} files")
 
-# Create pages directory and copy files with sequential names
 pages_dir = Path('sites/callmedley_com/pages')
 pages_dir.mkdir(parents=True, exist_ok=True)
 
-# Map files to page numbers
 page_mapping = []
-for idx, file_path in enumerate(all_files, 1):
+for idx, file_path in enumerate(all_files[:200], 1):
     target_name = f'page-{idx}.html'
     target_path = pages_dir / target_name
-    
     try:
         shutil.copy2(file_path, target_path)
-        # Extract original URL-like name for index
-        relative_path = file_path.replace('sites/callmedley_com/', '')
-        # Convert file path to URL-like format
-        url_like = 'https://callmedley.com/' + relative_path.replace('index.html', '').replace('.html', '/').rstrip('/')
-        page_mapping.append({
-            'number': idx,
-            'file': target_name,
-            'original': relative_path,
-            'url': url_like
-        })
-    except Exception as e:
-        print(f"Error copying {file_path}: {e}")
+        url_like = 'https://callmedley.com/' + file_path.replace('sites/callmedley_com/', '').replace('index.html', '').rstrip('/')
+        page_mapping.append((target_name, url_like))
+    except:
+        pass
 
-print(f"Created {len(page_mapping)} page files")
+html_lines = [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="UTF-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+    '<title>callmedley_com</title>',
+    '<style>',
+    '* { margin: 0; padding: 0; }',
+    'body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f5f5; padding: 20px; }',
+    '.container { max-width: 1000px; margin: 0 auto; }',
+    'h1 { color: #333; margin-bottom: 30px; }',
+    '.page-list { list-style: none; }',
+    '.page-item { background: white; padding: 15px; margin-bottom: 10px; border-radius: 6px; border-left: 4px solid #667eea; }',
+    'a { color: #667eea; text-decoration: none; }',
+    'a:hover { text-decoration: underline; }',
+    '</style>',
+    '</head>',
+    '<body>',
+    '<div class="container">',
+    f'<h1>📄 callmedley_com ({len(page_mapping)} pages)</h1>',
+    '<ul class="page-list">'
+]
 
-# Generate index.html
-html_content = '''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>callmedley_com</title>
-    <style>
-        * { margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f5f5; padding: 20px; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        h1 { color: #333; margin-bottom: 30px; }
-        .page-list { list-style: none; }
-        .page-item { background: white; padding: 15px; margin-bottom: 10px; border-radius: 6px; border-left: 4px solid #667eea; }
-        a { color: #667eea; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>📄 callmedley_com (''' + str(len(page_mapping)) + ''' pages)</h1>
-        <ul class="page-list">'''
+for page_file, url in page_mapping:
+    html_lines.append(f'<li class="page-item"><a href="{page_file}">🔗 {url}</a></li>')
 
-for page in page_mapping:
-    html_content += f'\n            <li class="page-item"><a href="{page["file"]}">🔗 {page["url"]}</a></li>'
+html_lines.extend([
+    '</ul>',
+    '</div>',
+    '</body>',
+    '</html>'
+])
 
-html_content += '''\n        </ul>
-    </div>
-</body>
-</html>
-'''
-
-# Write index.html
 index_path = Path('sites/callmedley_com/index.html')
 with open(index_path, 'w', encoding='utf-8') as f:
-    f.write(html_content)
+    f.write('\n'.join(html_lines))
 
-print(f"Generated index.html with {len(page_mapping)} links")
-EOF
-          
-          python /tmp/process_pages.py
-          
-          # Display results
-          echo "Pages created:"
-          ls -1 sites/callmedley_com/pages/*.html | wc -l
+print(f"Generated index with {len(page_mapping)} pages")
+PYTHON_EOF
       - name: Commit scraped content
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add sites/callmedley_com/ || true
-          git commit -m "🕷️ Scraped callmedley.com website with $(ls sites/callmedley_com/pages/*.html 2>/dev/null | wc -l) pages" || true
+          git commit -m "🕷️ Scraped website" || true
           git push origin main || echo "Nothing to push"

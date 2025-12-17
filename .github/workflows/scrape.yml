@@ -1,25 +1,63 @@
 name: Scrape Website
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sunday at 2 AM UTC
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Scrape callmedley.com
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
         run: |
-          mkdir -p sites/callmedley_com/pages
-          wget -r -l 3 -k -p --no-parent --timeout=10 -q \
-            -P sites/callmedley_com/ \
-            https://callmedley.com/ 2>&1 || true
-          echo "Download complete"
-      - name: Process downloaded pages
-        run: python3 process_pages.py
-      - name: Commit changes
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+      
+      - name: Run web crawler
+        run: python crawler.py
+      
+      - name: Commit and push
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add sites/callmedley_com/ || true
-          git commit -m "🕷️ Scraped and processed pages" || true
+          git add sites/ || true
+          git commit -m "🕷️ Crawled and archived website" || true
           git push origin main || echo "Nothing to push"
+
+  deploy:
+    needs: scrape
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+      
+      - name: Build site
+        run: |
+          mkdir -p _site
+          cp index.html _site/ || true
+          cp -r sites/callmedley_com _site/ || true
+      
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '_site'
+      
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

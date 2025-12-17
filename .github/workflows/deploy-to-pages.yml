@@ -199,7 +199,7 @@ jobs:
           from pathlib import Path
           
           artifacts_dir = Path('artifacts')
-          output_dir = Path('sites')
+          output_dir = Path('_site')  # ✅ ФИКС: Правильная директория
           output_dir.mkdir(exist_ok=True)
           
           print("\n" + "="*60)
@@ -213,8 +213,8 @@ jobs:
             
             print(f"📦 Building: {domain_folder}")
             
-            site_dir = output_dir / domain_folder
-            site_dir.mkdir(exist_ok=True)
+            # ✅ ФИКС: Контент идёт прямо в _site/, не в подпапку
+            site_dir = output_dir
             pages_dir = site_dir / 'pages'
             pages_dir.mkdir(exist_ok=True)
             
@@ -363,7 +363,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sites-build
-          path: sites/
+          path: _site/
           retention-days: 30
 
   # ============================================================

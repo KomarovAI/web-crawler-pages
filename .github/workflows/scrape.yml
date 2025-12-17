@@ -2,8 +2,7 @@ name: Scrape Website
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 2 * * 0'  # Weekly on Sunday at 2 AM UTC
-
+    - cron: '0 2 * * 0'
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -51,7 +50,7 @@ jobs:
         run: |
           mkdir -p _site
           cp index.html _site/ || true
-          cp -r sites/callmedley_com _site/ || true
+          cp -r sites/* _site/ || true
       
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

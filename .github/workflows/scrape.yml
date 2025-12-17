@@ -1,0 +1,38 @@
+name: Scrape Website
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y wget
+
+      - name: Scrape callmedley.com
+        run: |
+          # Create output directory
+          mkdir -p sites/callmedley_com/pages
+          
+          # Download the website using wget
+          wget -r -l 5 -k -p --no-parent --timeout=10 \
+            -P sites/callmedley_com/ \
+            https://callmedley.com/ || true
+          
+          # Find and list downloaded files
+          find sites/callmedley_com -type f -name '*.html' | head -20
+          echo "Total HTML files: $(find sites/callmedley_com -type f -name '*.html' | wc -l)"
+
+      - name: Commit scraped content
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add sites/callmedley_com/ || true
+          git commit -m "🕷️ Scraped callmedley.com website content" || true
+          git push origin main || true

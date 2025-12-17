@@ -12,17 +12,14 @@ jobs:
           mkdir -p sites/callmedley_com/pages
           wget -r -l 3 -k -p --no-parent --timeout=10 -q \
             -P sites/callmedley_com/ \
-            https://callmedley.com/ 2>&1 || echo "wget completed with exit code $?"
-      - name: Find and list files
-        run: |
-          find sites/callmedley_com -type f -name '*.html' | sort > /tmp/all_files.txt
-          echo "Total HTML files: $(wc -l < /tmp/all_files.txt)"
-      - name: Process pages
+            https://callmedley.com/ 2>&1 || true
+          echo "Download complete"
+      - name: Process downloaded pages
         run: python3 process_pages.py
-      - name: Commit scraped content
+      - name: Commit changes
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add sites/callmedley_com/ || true
-          git commit -m "🕷️ Scraped website" || true
+          git commit -m "🕷️ Scraped and processed pages" || true
           git push origin main || echo "Nothing to push"

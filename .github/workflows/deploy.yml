@@ -34,17 +34,15 @@ jobs:
 
       - name: Rewrite links to local paths
         run: |
-          DOMAIN="callmedley.com"
           SITE_PATH="_site/callmedley_com"
+          DOMAIN="callmedley.com"
           
-          # Find all HTML files and rewrite links from https://callmedley.com/* to local paths
           find "$SITE_PATH" -name '*.html' -type f | while read file; do
-            # Rewrite absolute URLs to relative paths
-            sed -i "s|https://$DOMAIN/|../|g" "$file"
-            sed -i "s|http://$DOMAIN/|../|g" "$file"
-            # Fix double slashes
-            sed -i "s|../pages/pages|../pages|g" "$file"
-            sed -i "s|../\.\.||g" "$file"
+            # Replace domain-based URLs with relative paths
+            sed -i "s|https://$DOMAIN/|./|g" "$file"
+            sed -i "s|http://$DOMAIN/|./|g" "$file"
+            # Clean up any double slashes or redirects
+            sed -i 's|\./\./|./|g' "$file"
             echo "Processed: $file"
           done
           echo "Links rewritten successfully"

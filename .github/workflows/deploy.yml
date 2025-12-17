@@ -1,86 +1,46 @@
-name: Deploy Archive to GitHub Pages
+name: Deploy to GitHub Pages
 
 on:
-  schedule:
-    - cron: '0 */6 * * *'
   push:
     branches: [main]
+  schedule:
+    - cron: '0 0 * * 0'  # Run weekly
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       pages: write
       id-token: write
-      actions: read
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
-      - name: Get Latest Run ID
-        uses: actions/github-script@v6
-        id: latest_run
-        with:
-          script: |
-            const resp = await github.rest.actions.listWorkflowRuns({
-              owner: 'KomarovAI',
-              repo: 'web-crawler',
-              workflow_id: 'archive.yml',
-              status: 'completed',
-              per_page: 1
-            });
-            if (resp.data.workflow_runs.length === 0) {
-              core.setFailed('No runs found');
-              return;
-            }
-            const run = resp.data.workflow_runs[0];
-            core.setOutput('run_id', run.id);
-      
-      - name: Get Latest Artifact Name
-        uses: actions/github-script@v6
-        id: artifact
-        with:
-          script: |
-            const runId = '${{ steps.latest_run.outputs.run_id }}';
-            const resp = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: 'KomarovAI',
-              repo: 'web-crawler',
-              run_id: parseInt(runId)
-            });
-            const artifact = resp.data.artifacts.find(a => a.name.startsWith('archive-'));
-            if (!artifact) {
-              core.setFailed('No archive artifact');
-              return;
-            }
-            core.setOutput('name', artifact.name);
-      
-      - name: Download Archive
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ steps.artifact.outputs.name }}
-          path: archive_data
-          repository: KomarovAI/web-crawler
-          run-id: ${{ steps.latest_run.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Extract All Files
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Prepare site content
         run: |
-          mkdir -p pages
-          cd archive_data
-          find . -name '*.zip' -exec unzip -q {} \;
-          find . -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' -o -name '*.json' -o -name '*.db' \) -print | head -500 | while read f; do
-            mkdir -p "../pages/$(dirname "$f" | cut -d/ -f4-)"
-            cp "$f" "../pages/$(dirname "$f" | cut -d/ -f4-)/" 2>/dev/null || true
-          done
-          cd ..
-          echo "Total files: $(find pages -type f | wc -l)"
-      
-      - name: Create Index HTML
-        run: |
-          mkdir -p pages
-          cat > pages/index.html << 'EOF'
+          mkdir -p _site
+          
+          # Copy the existing site structure
+          if [ -f "index.html" ]; then
+            cp index.html _site/
+          fi
+          
+          # Copy site directory if it exists
+          if [ -d "sites/callimedley_com" ]; then
+            cp -r sites/callimedley_com/* _site/ 2>/dev/null || true
+          fi
+          
+          # Copy root .css, .js files
+          find . -maxdepth 1 -type f \( -name '*.css' -o -name '*.js' \) -exec cp {} _site/ \;
+          
+          # Create index if missing
+          if [ ! -f "_site/index.html" ]; then
+            cat > _site/index.html << 'EOFINDEX'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -92,10 +52,8 @@ jobs:
     body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
     .container { max-width: 1200px; margin: 0 auto; }
     h1 { color: white; text-align: center; margin-bottom: 30px; font-size: 2.5em; }
-    .stats { color: white; text-align: center; margin-bottom: 30px; font-size: 1.1em; }
-    .file-list { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-height: 600px; overflow-y: auto; }
-    .file-item { padding: 8px; border-bottom: 1px solid #eee; font-size: 0.9em; }
-    .file-item:last-child { border-bottom: none; }
+    .file-list { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    .file-item { padding: 8px; border-bottom: 1px solid #eee; }
     .file-item a { color: #667eea; text-decoration: none; }
     .file-item a:hover { text-decoration: underline; }
   </style>
@@ -103,30 +61,33 @@ jobs:
 <body>
   <div class="container">
     <h1>📁 Web Archive</h1>
-    <div class="stats" id="stats">Loading...</div>
-    <div class="file-list" id="files"></div>
+    <div class="file-list" id="files">Loading files...</div>
   </div>
   <script>
     fetch('.')
       .then(r => r.text())
       .then(html => {
         const links = html.match(/href="([^"]+)"/g) || [];
-        const files = links.map(l => l.match(/href="([^"]+)"/)[1]).filter(f => f !== '/' && f !== '../');
-        document.getElementById('stats').textContent = `Showing ${files.length} archived files`;
-        document.getElementById('files').innerHTML = files.map(f => 
-          `<div class="file-item"><a href="${f}" target="_blank">🔗 ${f}</a></div>`
-        ).join('');
-      });
+        const files = links.map(l => l.match(/href="([^"]+)"/)[1]).filter(f => f !== '/' && f !== '../' && !f.startsWith('?'));
+        document.getElementById('files').innerHTML = files.length > 0 
+          ? files.map(f => `<div class="file-item"><a href="${f}" target="_blank">🔗 ${f}</a></div>`).join('')
+          : '<div class="file-item">No files found</div>';
+      })
+      .catch(e => document.getElementById('files').innerHTML = '<div class="file-item">Error loading files</div>');
   </script>
 </body>
 </html>
-EOF
-      
-      - name: Upload Pages Artifact
+EOFINDEX
+          fi
+          
+          echo "Site prepared in _site directory"
+          ls -la _site/ || echo "_site directory is empty"
+
+      - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: pages
-      
+          path: '_site'
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

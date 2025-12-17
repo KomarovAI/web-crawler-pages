@@ -27,8 +27,7 @@ jobs:
           # Copy index.html if exists
           [ -f "index.html" ] && cp index.html _site/ || true
           # Copy site directory content
-          [ -d "sites/callimedley_com" ] && cp -r sites/callimedley_com/* _site/ || true
-          # Copy css and js files
+          [ -d "sites/callmedley_com" ] && cp -r sites/callmedley_com _site/ || true          # Copy css and js files
           find . -maxdepth 1 -type f \( -name '*.css' -o -name '*.js' \) -exec cp {} _site/ \; || true
           # Ensure index exists
           if [ ! -f "_site/index.html" ]; then

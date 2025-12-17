@@ -42,11 +42,11 @@ jobs:
           for i in {1..5}; do
             echo "Pass $i:"
             found=0
-            find artifacts -name "*.zip" -type f | while read zip; do
+            find artifacts -name "*.zip" -type f 2>/dev/null | while read zip; do
               found=$((found+1))
               dir=$(dirname "$zip")
               echo "  Extracting: $zip"
-              unzip -q "$zip" -d "$dir"
+              unzip -q -o "$zip" -d "$dir" || true
               rm "$zip"
             done
             if [ $found -eq 0 ]; then
@@ -82,7 +82,7 @@ jobs:
           
           print(f"📂 Directory contents: {list(artifacts_dir.iterdir())}")
           
-          db_files = list(artifacts_dir.glob('db-*/*.db'))
+          db_files = list(artifacts_dir.glob('**/*.db'))
           
           if not db_files:
             print("❌ No database files found!")
@@ -91,7 +91,7 @@ jobs:
           print(f"\n✅ Found {len(db_files)} database(s)\n")
           
           for db_file in sorted(db_files):
-            domain = db_file.parent.name.replace('db-', '')
+            domain = db_file.stem
             size_mb = db_file.stat().st_size / 1024 / 1024
             
             print(f"📦 {domain} ({size_mb:.2f} MB)")
@@ -105,7 +105,7 @@ jobs:
               if magic4 == b'PK\x03\x04':
                 print(f"  ⚠️  This is actually a ZIP file! Extracting...")
                 parent_dir = db_file.parent
-                subprocess.run(['unzip', '-q', str(db_file), '-d', str(parent_dir)])
+                subprocess.run(['unzip', '-q', '-o', str(db_file), '-d', str(parent_dir)])
                 db_file.unlink()
                 db_files_after = list(parent_dir.glob('*.db'))
                 if db_files_after:
@@ -132,7 +132,7 @@ jobs:
               
               cursor.execute("PRAGMA table_info(pages)")
               columns = cursor.fetchall()
-              print(f"  📋 ALL COLUMNS: {[c[1] for c in columns]}")
+              print(f"  📋 Columns: {[c[1] for c in columns]}")
               
               cursor.execute("SELECT COUNT(*) FROM pages")
               pages = cursor.fetchone()[0]
@@ -179,9 +179,9 @@ jobs:
       - name: 🗜️ Extract ZIP archives recursively
         run: |
           for i in {1..5}; do
-            find artifacts -name "*.zip" -type f | while read zip; do
+            find artifacts -name "*.zip" -type f 2>/dev/null | while read zip; do
               dir=$(dirname "$zip")
-              unzip -q "$zip" -d "$dir"
+              unzip -q -o "$zip" -d "$dir" || true
               rm "$zip"
             done
           done
@@ -206,12 +206,10 @@ jobs:
           print("🏗️  BUILDING STATIC SITE")
           print("="*60 + "\n")
           
-          for db_dir in sorted(artifacts_dir.glob('db-*')):
-            domain_folder = db_dir.name.replace('db-', '')
-            db_file = db_dir / f"{domain_folder}.db"
-            
-            if not db_file.exists():
-              continue
+          db_files = list(artifacts_dir.glob('**/*.db'))
+          
+          for db_file in sorted(db_files):
+            domain_folder = db_file.stem
             
             print(f"📦 Building: {domain_folder}")
             
@@ -228,7 +226,7 @@ jobs:
             
             cursor.execute("PRAGMA table_info(pages)")
             all_cols = [row[1] for row in cursor.fetchall()]
-            print(f"  All columns: {all_cols}")
+            print(f"  Columns: {all_cols}")
             
             cursor.execute("SELECT * FROM pages ORDER BY id")
             pages = cursor.fetchall()
@@ -252,6 +250,7 @@ jobs:
             html_content += '}\n'
             html_content += '.container { max-width: 1200px; margin: 0 auto; }\n'
             html_content += 'h1 { color: white; text-align: center; margin-bottom: 40px; font-size: 2.5em; }\n'
+            html_content += '.info { color: white; text-align: center; margin-bottom: 30px; }\n'
             html_content += '.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }\n'
             html_content += '.card {\n'
             html_content += '  background: white;\n'
@@ -278,6 +277,7 @@ jobs:
             html_content += '<body>\n'
             html_content += '<div class="container">\n'
             html_content += f'<h1>📖 {domain_folder}</h1>\n'
+            html_content += f'<div class="info">Total pages: {len(pages)}</div>\n'
             html_content += '<div class="grid">\n'
             
             url_col = next((c for c in all_cols if c.lower() in ['url', 'href', 'uri']), all_cols[0] if all_cols else 'id')
@@ -367,7 +367,7 @@ jobs:
           retention-days: 30
 
   # ============================================================
-  # JOB 3: DEPLOY - Upload to GitHub Pages
+  # JOB 3: DEPLOY - Upload to GitHub Pages (NO JEKYLL)
   # ============================================================
   deploy:
     name: '🚀 Deploy to Pages'
@@ -379,38 +379,35 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+      url: ${{ steps.deployment.outputs.page_url }}
     
     steps:
-      - name: 📂 Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: 📥 Download build
+      - name: 📥 Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: sites-build
-          path: sites/
-
-      - name: 🔧 Configure Pages
-        uses: actions/configure-pages@v4
-
-      - name: 🏗️ Build with Jekyll
-        uses: actions/jekyll-build-pages@v1
-        with:
-          source: ./
-          destination: ./_site
-
+          path: _site/
+      
+      - name: 🚫 Disable Jekyll processing
+        run: |
+          touch _site/.nojekyll
+          echo "✅ Jekyll disabled for static HTML deployment"
+      
+      - name: 📂 Show structure
+        run: |
+          echo "Directory structure:"
+          find _site -type f | head -20
+      
       - name: 📤 Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './_site'
-
+          path: '_site'
+      
       - name: 🚀 Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
-
-      - name: 📊 Summary
+      
+      - name: ✅ Summary
         run: |
           echo ""
           echo "╔════════════════════════════════════════════════════════╗"
@@ -423,8 +420,8 @@ jobs:
           echo "  • Run ID: ${{ inputs.run_id }}"
           echo "  • Workflow: ${{ github.run_id }}"
           echo ""
-          echo "🌐 Pages URL:"
-          echo "  https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          echo "🌐 Live URL:"
+          echo "  ${{ steps.deployment.outputs.page_url }}"
           echo ""
           echo "✨ Your sites are LIVE!"
           echo ""

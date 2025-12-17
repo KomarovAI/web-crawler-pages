@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '0 0 * * 0'  # Run weekly
+    - cron: '0 0 * * 0'
 
 jobs:
   deploy:
@@ -24,66 +24,20 @@ jobs:
       - name: Prepare site content
         run: |
           mkdir -p _site
-          
-          # Copy the existing site structure
-          if [ -f "index.html" ]; then
-            cp index.html _site/
-          fi
-          
-          # Copy site directory if it exists
-          if [ -d "sites/callimedley_com" ]; then
-            cp -r sites/callimedley_com/* _site/ 2>/dev/null || true
-          fi
-          
-          # Copy root .css, .js files
-          find . -maxdepth 1 -type f \( -name '*.css' -o -name '*.js' \) -exec cp {} _site/ \;
-          
-          # Create index if missing
+          # Copy index.html if exists
+          [ -f "index.html" ] && cp index.html _site/ || true
+          # Copy site directory content
+          [ -d "sites/callimedley_com" ] && cp -r sites/callimedley_com/* _site/ || true
+          # Copy css and js files
+          find . -maxdepth 1 -type f \( -name '*.css' -o -name '*.js' \) -exec cp {} _site/ \; || true
+          # Ensure index exists
           if [ ! -f "_site/index.html" ]; then
-            cat > _site/index.html << 'EOFINDEX'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Web Archive</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 40px 20px; }
-    .container { max-width: 1200px; margin: 0 auto; }
-    h1 { color: white; text-align: center; margin-bottom: 30px; font-size: 2.5em; }
-    .file-list { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-    .file-item { padding: 8px; border-bottom: 1px solid #eee; }
-    .file-item a { color: #667eea; text-decoration: none; }
-    .file-item a:hover { text-decoration: underline; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>📁 Web Archive</h1>
-    <div class="file-list" id="files">Loading files...</div>
-  </div>
-  <script>
-    fetch('.')
-      .then(r => r.text())
-      .then(html => {
-        const links = html.match(/href="([^"]+)"/g) || [];
-        const files = links.map(l => l.match(/href="([^"]+)"/)[1]).filter(f => f !== '/' && f !== '../' && !f.startsWith('?'));
-        document.getElementById('files').innerHTML = files.length > 0 
-          ? files.map(f => `<div class="file-item"><a href="${f}" target="_blank">🔗 ${f}</a></div>`).join('')
-          : '<div class="file-item">No files found</div>';
-      })
-      .catch(e => document.getElementById('files').innerHTML = '<div class="file-item">Error loading files</div>');
-  </script>
-</body>
-</html>
-EOFINDEX
+            cp index.html _site/index.html 2>/dev/null || echo "No index file"
           fi
-          
-          echo "Site prepared in _site directory"
-          ls -la _site/ || echo "_site directory is empty"
+          echo "Site prepared successfully"
+          ls -la _site/ | head -20 || echo "_site directory is empty"
 
-      - name: Upload artifact
+      - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: '_site'

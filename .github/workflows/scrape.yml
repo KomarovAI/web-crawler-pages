@@ -10,22 +10,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          apt-get update
-          apt-get install -y wget
-
       - name: Scrape callmedley.com
         run: |
-          # Create output directory
+          # wget already installed, create output directory
           mkdir -p sites/callmedley_com/pages
           
           # Download the website using wget
-          wget -r -l 5 -k -p --no-parent --timeout=10 \
+          wget -r -l 3 -k -p --no-parent --timeout=10 -q \
             -P sites/callmedley_com/ \
-            https://callmedley.com/ || true
+            https://callmedley.com/ 2>&1 || echo "wget completed with exit code $?"
           
           # Find and list downloaded files
+          echo "Files downloaded:"
           find sites/callmedley_com -type f -name '*.html' | head -20
           echo "Total HTML files: $(find sites/callmedley_com -type f -name '*.html' | wc -l)"
 
@@ -34,5 +30,5 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add sites/callmedley_com/ || true
-          git commit -m "🕷️ Scraped callmedley.com website content" || true
-          git push origin main || true
+          git commit -m "🕷️ Scraped callmedley.com website" || true
+          git push origin main || echo "Nothing to push"

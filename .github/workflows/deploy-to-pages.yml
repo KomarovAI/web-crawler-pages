@@ -15,6 +15,9 @@ on:
         required: true
         default: 'callmedley-com'
 
+env:
+  PYTHON_VERSION: '3.11'
+
 jobs:
   # ============================================================
   # JOB 1: VERIFY - Check database integrity
@@ -62,7 +65,8 @@ jobs:
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
 
       - name: ✅ Check database files & schema
         run: |
@@ -189,7 +193,8 @@ jobs:
       - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
 
       - name: 🏗️ Build HTML pages
         run: |
@@ -199,7 +204,7 @@ jobs:
           from pathlib import Path
           
           artifacts_dir = Path('artifacts')
-          output_dir = Path('_site')  # ✅ ФИКС: Правильная директория
+          output_dir = Path('_site')
           output_dir.mkdir(exist_ok=True)
           
           print("\n" + "="*60)
@@ -213,11 +218,12 @@ jobs:
             
             print(f"📦 Building: {domain_folder}")
             
-            # ✅ ФИКС: Контент идёт прямо в _site/, не в подпапку
+            # ✅ КРИТИЧЕСКИЙ ФИКС: Контент идёт прямо в _site/ (корень сайта)
             site_dir = output_dir
             pages_dir = site_dir / 'pages'
             pages_dir.mkdir(exist_ok=True)
             
+            # Копируем базу для отладки
             shutil.copy(db_file, site_dir / f"{domain_folder}.db")
             
             conn = sqlite3.connect(str(db_file))

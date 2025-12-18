@@ -1,6 +1,0 @@
-Source: KomarovAI/web-crawler
-Run: 20329507589
-Time: Thu Dec 18 07:34:10 UTC 2025
-Mode: REUSE
-Deployed to: ROOT (GitHub Pages)
-Note: WARC files excluded due to GitHub's 100MB file size limit

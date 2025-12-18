@@ -1,0 +1,5 @@
+Source: KomarovAI/web-crawler
+Run: 20329343581
+Time: Thu Dec 18 07:26:21 UTC 2025
+Mode: REUSE
+Note: WARC files excluded due to GitHub's 100MB file size limit

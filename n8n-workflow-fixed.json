@@ -1,0 +1,103 @@
+{
+  "name": "My workflow - FIXED",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-archive",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-176, -256],
+      "id": "ed0c8cc6-9fc2-4515-92f1-ce69b86ec916",
+      "name": "Webhook",
+      "webhookId": "fa4dfee7-0a0a-41eb-b32c-1780d49b482c"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Получаем входные данные из Webhook\nconst webhookInput = $input.first().json;\n\n// ВАЖНО: данные находятся в body, не в корне!\nconst input = webhookInput.body || webhookInput;\n\nconsole.log(\"📥 INPUT received:\", JSON.stringify(input, null, 2));\n\n// Извлекаем параметры\nconst url = input.url || \"\";\nconst maxPages = input.max_pages || input.maxPages || \"500\";\nconst useSelenium = input.use_selenium || input.useSelenium || \"true\";\nconst ignoreRobots = input.ignore_robots || input.ignoreRobots || \"false\";\nconst targetRepo = input.target_repo || input.targetRepo || \"KomarovAI/web-crawler-pages\";\nconst autoDeploy = input.auto_deploy || input.autoDeploy || \"true\";\nconst reuseArtifactRunId = input.reuse_artifact_run_id || input.reuseArtifactRunId || \"\";\n\nconsole.log(\"🔍 Parsed inputs:\");\nconsole.log(`  URL: ${url}`);\nconsole.log(`  Max Pages: ${maxPages}`);\nconsole.log(`  Use Selenium: ${useSelenium}`);\nconsole.log(`  Ignore Robots: ${ignoreRobots}`);\nconsole.log(`  Target Repo: ${targetRepo}`);\nconsole.log(`  Auto Deploy: ${autoDeploy}`);\n\n// ✅ ВАЛИДАЦИЯ 1: URL проверка\nif (!url || !/^https?:\\/\\//.test(url)) {\n  throw new Error(`❌ INVALID URL: \"${url}\" - must start with http:// or https://`);\n}\n\nconsole.log(\"✅ URL validation PASSED\");\n\n// ✅ ВАЛИДАЦИЯ 2: max_pages проверка\nconst maxPagesNum = parseInt(maxPages, 10);\nif (isNaN(maxPagesNum) || maxPagesNum < 1 || maxPagesNum > 5000) {\n  throw new Error(`❌ INVALID MAX_PAGES: \"${maxPages}\" - must be 1-5000`);\n}\n\nconsole.log(\"✅ Max pages validation PASSED\");\n\n// ✅ ВАЛИДАЦИЯ 3: target_repo проверка формата\nif (!targetRepo.match(/^[\\w\\-]+\\/[\\w\\-]+$/)) {\n  throw new Error(`❌ INVALID TARGET_REPO: \"${targetRepo}\" - format must be owner/repo`);\n}\n\nconsole.log(\"✅ Target repo validation PASSED\");\n\n// ✅ ВАЛИДАЦИЯ 4: Extract domain из URL (БЕЗ встроенного URL класса)\nlet domain = \"\";\ntry {\n  // Используем regex вместо new URL()\n  domain = url\n    .replace(/^https?:\\/\\//, '')      // Удаляем http:// или https://\n    .split('/')[0]                     // Берем только домен\n    .split('?')[0];                    // Удаляем query параметры\n  \n  if (!domain) {\n    throw new Error(\"Domain is empty\");\n  }\n  \n  console.log(`✅ Domain extracted: ${domain}`);\n} catch (e) {\n  throw new Error(`❌ Failed to parse URL: ${e.message}`);\n}\n\nconsole.log(\"✅ All validations PASSED!\");\n\n// Возвращаем валидные данные\nreturn {\n  url: url,\n  maxPages: String(maxPagesNum),\n  useSelenium: String(useSelenium === \"true\" || useSelenium === true),\n  ignoreRobots: String(ignoreRobots === \"true\" || ignoreRobots === true),\n  targetRepo: targetRepo,\n  autoDeploy: String(autoDeploy === \"true\" || autoDeploy === true),\n  reuseArtifactRunId: reuseArtifactRunId || \"\",\n  domain: domain,\n  validatedAt: new Date().toISOString(),\n  status: \"✅ VALIDATION PASSED\"\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [32, -256],
+      "id": "2b228cec-82d8-4110-87f7-3e88094b2790",
+      "name": "формиратор запроса"
+    },
+    {
+      "parameters": {
+        "resource": "workflow",
+        "operation": "dispatchAndWait",
+        "owner": {
+          "__rl": true,
+          "value": "KomarovAI",
+          "mode": "name"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "web-crawler",
+          "mode": "name"
+        },
+        "workflowId": {
+          "__rl": true,
+          "value": "download-site.yml",
+          "mode": "filename"
+        },
+        "ref": {
+          "__rl": true,
+          "value": "main",
+          "mode": "name"
+        },
+        "inputs": "={\"url\": \"{{ $json.url }}\", \"max_pages\": \"{{ $json.maxPages }}\", \"use_selenium\": \"{{ $json.useSelenium }}\", \"ignore_robots\": \"{{ $json.ignoreRobots }}\"}"
+      },
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [240, -256],
+      "id": "596923e6-af6a-4804-9aca-7f679d1de3ec",
+      "name": "Dispatch a workflow event and wait for completion",
+      "webhookId": "5ad01eab-8d74-416f-816c-0801c7cad0bb",
+      "credentials": {
+        "githubApi": {
+          "id": "LxTwkRmqesV4PeVF",
+          "name": "GitHub account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "формиратор запроса",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "формиратор запроса": {
+      "main": [
+        [
+          {
+            "node": "Dispatch a workflow event and wait for completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f62ea467-3624-469f-8fb7-19406ebacbba",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "bc92d5239af63247dab79472db32c79b12ad3421f5a46f0229da6eba80d53a5b"
+  },
+  "id": "kKmepEIa36OnTWyv",
+  "tags": []
+}
